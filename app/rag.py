@@ -218,11 +218,24 @@ class LocalRAG:
             if c.get("score", 0.0) >= threshold
         ]
 
+        # 4.5. P1 FIX: Page Diversity Filter
+        # Ensures we don't return 5 chunks from the exact same page unless necessary
+        diverse_candidates = []
+        page_counts = {}
+        for c in filtered_candidates:
+            doc_id = c.get("filename", "unknown")
+            page_num = c.get("page_number", "unknown")
+            key = f"{doc_id}:{page_num}"
+            count = page_counts.get(key, 0)
+            if count < 2:  # Max 2 chunks per page
+                diverse_candidates.append(c)
+                page_counts[key] = count + 1
+
         # 5. Rerank top candidates if enabled
-        if RERANKING_ENABLED and self.reranker and filtered_candidates:
-            final_hits = self.reranker.rerank(clean_query, filtered_candidates, top_k=top_k)
+        if RERANKING_ENABLED and self.reranker and diverse_candidates:
+            final_hits = self.reranker.rerank(clean_query, diverse_candidates, top_k=top_k)
         else:
-            final_hits = filtered_candidates[:top_k]
+            final_hits = diverse_candidates[:top_k]
 
         return final_hits
 
@@ -287,16 +300,13 @@ class LocalRAG:
                 content_label = "Precise Chunk Content"
                 text = payload.get("text", "").strip()
 
-            evidence_block = f"""[EVIDENCE {index}]
+            evidence_block = f"""[E{index}]
 Document: {filename}
 Page: {page_number}
-Location: {location}
 Section: {section}
-Category: {category}
-Document Type: {document_type}
-Extraction Method: {extraction} (OCR Used: {ocr_used})
-Industrial Tags: {", ".join(tags) if tags else "None"}
-{content_label}:
+Relevance: {score}
+
+Text:
 {text}
 """
             context_parts.append(evidence_block)
@@ -393,6 +403,39 @@ Answer concisely, accurately, and professionally:
                 f"{hits[0].get('text', '') if isinstance(hits[0], dict) else getattr(hits[0], 'payload', {}).get('text', '')}"
             )
             return evidence_summary, sources
+
+    def search(self, question: str, top_k: int = TOP_K, threshold: float = SIMILARITY_THRESHOLD) -> dict:
+        """
+        Agent Interface Contract (P1).
+        Returns a strict JSON-compatible dictionary for downstream AI Agents.
+        """
+        hits = self.retrieve(question, top_k=top_k, threshold=threshold)
+        
+        if not hits:
+            return {
+                "found": False,
+                "confidence": 0.0,
+                "context": "",
+                "sources": [],
+                "reason": "insufficient_local_evidence"
+            }
+            
+        context, sources = self.build_context(hits, question=question)
+        
+        # Calculate an aggregate confidence based on top scores
+        top_score = sources[0]["score"] if sources else 0.0
+        
+        return {
+            "found": True,
+            "confidence": top_score,
+            "context": context,
+            "sources": sources,
+            "retrieval_stats": {
+                "candidates": top_k * 4 if HYBRID_RETRIEVAL_ENABLED else top_k,
+                "reranked": len(sources),
+                "final": min(len(sources), top_k)
+            }
+        }
 
     def close(self):
         """Close vector store connection cleanly."""

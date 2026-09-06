@@ -34,7 +34,7 @@ class LayoutLMv3Parser:
             from transformers import LayoutLMv3Processor, LayoutLMv3ForTokenClassification
             import torch
             # Check if torch and transformers are successfully imported
-            if torch.is_available() or True: 
+            if torch.cuda.is_available() or True: 
                 self.available = True
                 self.processor = None
                 self.model = None

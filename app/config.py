@@ -35,7 +35,7 @@ RRF_K = 60  # Reciprocal Rank Fusion constant
 
 # Reranker Settings
 RERANKING_ENABLED = True
-RERANKER_ENGINE = "lexical"  # "lexical" (fast, zero extra VRAM) or "cross_encoder" (deep attention)
+RERANKER_ENGINE = "cross_encoder"  # P1 FIX: Mandated Cross-Encoder for deep attention
 RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
 
 # Local OCR Settings
