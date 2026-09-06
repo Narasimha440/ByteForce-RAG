@@ -1,0 +1,10 @@
+streamlit
+qdrant-client
+sentence-transformers
+pypdf
+python-docx
+openpyxl
+requests
+pillow
+rapidocr-onnxruntime
+pymupdf
