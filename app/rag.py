@@ -311,7 +311,32 @@ Text:
 """
             context_parts.append(evidence_block)
 
-            sources.append({
+            # Visual / Multimodal Handoff for Bhuvan's Vision Pipeline (Qwen2.5-VL-7B)
+            is_visual = (
+                payload.get("requires_vision_agent", False)
+                or payload.get("content_type") in ("cad_drawing", "scanned_document", "image")
+                or payload.get("file_type") in ("dwg", "dxf", "png", "jpg", "jpeg", "webp")
+                or ocr_used
+            )
+            visual_handoff = None
+            if is_visual:
+                visual_handoff = {
+                    "requires_vision_agent": True,
+                    "target_model": "Qwen2.5-VL-7B-Instruct",
+                    "document": filename,
+                    "source_path": source,
+                    "page_number": page_number,
+                    "file_type": payload.get("file_type", "unknown"),
+                    "drawing_code": payload.get("drawing_code"),
+                    "equipment_tags": tags,
+                    "recommended_action": (
+                        "Inspect engineering schematic visually for piping connectivity, signal lines, and layout"
+                        if payload.get("file_type") in ("dwg", "dxf")
+                        else "Analyze rendered high-res image for visual details"
+                    ),
+                }
+
+            source_item = {
                 "filename": filename,
                 "source": source,
                 "location": location,
@@ -324,7 +349,11 @@ Text:
                 "tags": tags,
                 "chunk_id": chunk_id,
                 "score": round(float(score), 4) if score is not None else 0.0,
-            })
+            }
+            if visual_handoff:
+                source_item["visual_handoff"] = visual_handoff
+
+            sources.append(source_item)
 
         return "\n".join(context_parts), sources
 
@@ -424,12 +453,14 @@ Answer concisely, accurately, and professionally:
         
         # Calculate an aggregate confidence based on top scores
         top_score = sources[0]["score"] if sources else 0.0
-        
+        visual_handoffs = get_visual_evidence(hits)
+
         return {
             "found": True,
             "confidence": top_score,
             "context": context,
             "sources": sources,
+            "visual_handoffs": visual_handoffs,
             "retrieval_stats": {
                 "candidates": top_k * 4 if HYBRID_RETRIEVAL_ENABLED else top_k,
                 "reranked": len(sources),
@@ -441,6 +472,40 @@ Answer concisely, accurately, and professionally:
         """Close vector store connection cleanly."""
         if hasattr(self.store, "close"):
             self.store.close()
+
+
+def get_visual_evidence(hits: List[Any]) -> List[Dict[str, Any]]:
+    """
+    Extract visual and CAD handoff objects from retrieval hits
+    for downstream consumption by Bhuvan's Vision Agent (Qwen2.5-VL).
+    """
+    visuals: List[Dict[str, Any]] = []
+    for hit in hits:
+        payload = hit.payload if hasattr(hit, "payload") and hit.payload else (hit if isinstance(hit, dict) else {})
+        if not payload:
+            continue
+
+        ocr_used = payload.get("ocr_used", False)
+        content_type = payload.get("content_type", "")
+        file_type = payload.get("file_type", "")
+
+        if (
+            payload.get("requires_vision_agent")
+            or content_type in ("cad_drawing", "scanned_document", "image")
+            or file_type in ("dwg", "dxf", "png", "jpg", "jpeg", "webp")
+            or ocr_used
+        ):
+            visuals.append({
+                "document": payload.get("filename", "unknown"),
+                "source_path": payload.get("source", ""),
+                "page_number": payload.get("page_number", 1),
+                "file_type": file_type,
+                "drawing_code": payload.get("drawing_code"),
+                "equipment_tags": payload.get("tags", []),
+                "target_model": "Qwen2.5-VL-7B-Instruct",
+                "requires_vision_agent": True,
+            })
+    return visuals
 
 
 def retrieve(question: str, top_k: int = TOP_K, threshold: float = SIMILARITY_THRESHOLD) -> List[Any]:

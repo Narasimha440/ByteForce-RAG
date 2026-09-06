@@ -14,6 +14,7 @@ from abc import ABC, abstractmethod
 import io
 import logging
 from pathlib import Path
+import re
 from typing import List, Optional, Tuple, Union
 
 from PIL import Image
@@ -348,14 +349,60 @@ def render_pdf_page_to_image(
             )
 
 
+def sanitize_industrial_tags(text: str) -> str:
+    """
+    Post-process OCR output to sanitize and correct common optical character
+    recognition errors in industrial instrumentation tags (ISA-5.1), units, and electrical ratings.
+    """
+    if not text:
+        return ""
+
+    cleaned = text
+
+    # 1. Standardize common electrical & process engineering units
+    cleaned = re.sub(r"\b24\s*V[0oO]C\b", "24 VDC", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b12[oO]\s*VAC\b", "120 VAC", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b23[oO]\s*VAC\b", "230 VAC", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b4\s*[-–]\s*2[oO]\s*mA\b", "4-20 mA", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\bbar\s*\(\s*g\s*\)", "bar(g)", cleaned, flags=re.IGNORECASE)
+
+    # 2. Fix OCR optical errors in ISA-5.1 Instrument & Valve Tags
+    tag_prefixes = r"(?:PT|TT|FT|LT|XV|FV|PV|LV|DP|TI|PI|FI|LI|ESD|SDV|BDV|MOV|PSV|PRV|CV|FC|FO)"
+
+    def _clean_tag(match: re.Match) -> str:
+        prefix = match.group(1).upper()
+        num_body = match.group(3)
+        trailer = match.group(4) or ""
+        fixed_num = ""
+        for ch in num_body:
+            if ch in ("O", "o"):
+                fixed_num += "0"
+            elif ch in ("l", "I", "|"):
+                fixed_num += "1"
+            else:
+                fixed_num += ch
+        return f"{prefix}-{fixed_num}{trailer.upper()}"
+
+    tag_pattern = re.compile(rf"\b({tag_prefixes})([-\s]?)([0-9OoIl|]{{2,5}})([A-Za-z]?)\b")
+    cleaned = tag_pattern.sub(_clean_tag, cleaned)
+
+    return cleaned
+
+
 def extract_text_with_ocr(
-    image_or_path: Union[Image.Image, Path, str]
+    image_or_path: Union[Image.Image, Path, str],
+    sanitize_tags: bool = True,
 ) -> Tuple[str, float]:
     """
-    Convenience function to run OCR on an image or file path.
+    Convenience function to run OCR on an image or file path,
+    with optional post-processing ISA-5.1 industrial tag sanitization.
 
     Returns:
         Tuple of (extracted_text, average_confidence)
     """
     engine = get_ocr_engine()
-    return engine.extract_text_from_image(image_or_path)
+    raw_text, conf = engine.extract_text_from_image(image_or_path)
+    if sanitize_tags and raw_text:
+        raw_text = sanitize_industrial_tags(raw_text)
+    return raw_text, conf
+
