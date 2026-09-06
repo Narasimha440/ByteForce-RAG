@@ -2,5 +2,6 @@
 .env
 __pycache__
 *.pyc
-data/
 *.log
+data/qdrant_storage/
+data/*.log
