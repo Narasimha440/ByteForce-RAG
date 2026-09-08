@@ -300,10 +300,15 @@ class LocalRAG:
                 content_label = "Precise Chunk Content"
                 text = payload.get("text", "").strip()
 
-            evidence_block = f"""[E{index}]
+            evidence_block = f"""[EVIDENCE {index}] [E{index}]
 Document: {filename}
 Page: {page_number}
+Location: {location}
 Section: {section}
+Category: {category}
+Document Type: {document_type}
+Extraction Method: {extraction} (OCR Used: {ocr_used})
+Industrial Tags: {", ".join(tags) if tags else "None"}
 Relevance: {score}
 
 Text:

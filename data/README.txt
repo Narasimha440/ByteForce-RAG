@@ -1,23 +1,69 @@
-SIH 26117 - Categorized Knowledge Base
+ByteForce-RAG (SIH 26117) - Organized Knowledge Base Structure
 
-This ZIP contains the 86 source files organized for the sovereign/air-gapped RAG and multimodal pipeline. Original filenames and file contents are preserved.
+The repository data directory is partitioned into two primary functional categories (OCR and RAG) plus system storage for clean maintenance and modular synchronization:
+
+================================================================================
+1. data/ocr/ (OCR Subsystem Inputs & Testing)
+================================================================================
+Contains all scanned documents, inspection checklists, accident reports, and images
+that trigger the local RapidOCR engine, PyMuPDF in-memory rasterization, and ISA-5.1
+industrial tag correction.
 
 Folders:
-01_Standards_Reference - design standards, process control narrative, instrumentation/control specifications, approved manufacturers, wiring/labelling, SCADA hardware specification.
-02_Templates_Checklists_Forms - design/revision forms, FAT templates, commissioning flow chart, installation/calibration checklists, inventories and maintenance forms.
-03_PIDs - standard P&ID legends and sample P&IDs.
-04_Instrumentation_Drawings - standard instrument mounting/detail drawings.
-05_Control_Panel_Drawings - ICP/control-panel layouts, BOMs, PLC modules, I/O cards, wiring and power distribution drawings.
-06_Equipment_IO - typical equipment I/O interface drawing.
-07_Network_Architecture - sample network architecture drawing.
-08_SCADA - SCADA computer hardware specification and sample SCADA screens.
-09_Inspection_Accident - industrial/MAH inspection and accident investigation checklists/templates.
-10_Public_Reference - public reference/tender PDF that did not match the other categories.
+- 09_Inspection_Accident/
+  * MRPL_MAH_Factory_Annual_Safety_Audit_2026.pdf (Scanned statutory safety audit)
+  * Checklist_for_inspection_of_2-cb-MAH_Factories.pdf
+  * check_list_for_preparing_accident_investigation_report.pdf
+  * Inspection_Report_Format_Checklis.pdf
+  * 20250618_letter.pdf
+- 02_Templates_Checklists_Forms/
+  * Inspection checklists, check sheets, calibration forms, and revision templates.
+- scanned_samples/
+  * Sample high-resolution scanned report pages (e.g. scanned_mah_page.png).
 
-Suggested processing:
-- DOCX/PDF: extract text + headings + page metadata; OCR scanned pages when necessary.
-- XLSX: preserve rows/columns and create structured records; optionally index a text representation too.
-- PPTX: extract slide text and render slides for visual retrieval.
-- DWG: render/export to PDF/PNG before OCR/vision analysis; do not treat DWG as ordinary text.
+Sync CLI:
+  python -m app.ingest ocr
 
-Important: These are public/reference documents. Do not represent them as confidential MRPL files. Use synthetic internal reports/SOPs/approval notes for the confidential workflow demonstration.
+================================================================================
+2. data/rag/ (Structured RAG Subsystem Knowledge Base)
+================================================================================
+Contains all digital refinery procedures, engineering standards, operating manuals,
+instrumentation index spreadsheets, and CAD drawing assets that form the core RAG
+retrieval knowledge base.
+
+Folders:
+- 01_Standards_Reference/
+  * MRPL Operating SOPs (HCU, FCCU, CDU/VDU, SPM Offshore Unloading)
+  * MRPL_Refinery_Master_Technical_Profile.docx (15.0 MMTPA complex profile)
+  * OISD-156 Fire Protection Standards
+  * Instrumentation and Control Specifications
+- 03_PIDs/
+  * Standard P&ID legends and process flow CAD drawings (.dwg, .dxf)
+- 04_Instrumentation_Drawings/
+  * MRPL_Instrumentation_Master_Index.xlsx (Master equipment & instrument index)
+  * Standard instrument mounting and transmitter detail drawings
+- 05_Control_Panel_Drawings/
+  * ICP layouts, BOMs, wiring schematics, power distribution
+- 07_Network_Architecture/
+  * Sample network topology and architecture drawings
+- 08_SCADA/
+  * SCADA hardware specifications and screen layouts
+- 10_Public_Reference/
+  * Public reference specifications and documentation
+
+Sync CLI:
+  python -m app.ingest rag
+
+================================================================================
+3. System State, Indexes & Storage (Auto-managed)
+================================================================================
+- qdrant_storage/       : Local on-disk embedded Qdrant vector database
+- document_registry.db  : SQLite persistent registry tracking document hashes and sync status
+- bm25_index.json       : Okapi BM25 inverted index for exact equipment tag keyword retrieval
+- airgap_audit.log      : Sovereign append-only network audit trail
+- file_manifest.csv     : Master manifest with category and retrieval mode mapping
+
+================================================================================
+General Sync Command:
+  python -m app.ingest      # Incrementally syncs both OCR and RAG documents
+================================================================================

@@ -47,9 +47,16 @@ This guide provides a comprehensive evaluation of open-weight foundation models 
   - Runs with llama.cpp or HuggingFace Transformers locally.
 
 ### D. Embeddings & Reranking: `BAAI/bge-m3` & `bge-reranker-v2-m3`
-- **Already implemented in ByteForce-RAG**:
-  - `bge-m3` produces dense embeddings with high discriminative capability across technical numbers, hyphens, and units.
-  - `bge-reranker-v2-m3` cross-scores query-candidate pairs to ensure that exact safety standards or specific valve tags are ranked #1.
+- **Implemented in ByteForce-RAG (`app/embeddings.py`, `app/reranker.py`)**:
+  - `bge-m3` produces 1024-dim dense embeddings with high discriminative capability across technical numbers, hyphens, and units.
+  - `bge-reranker-v2-m3` performs deep cross-attention over query-document pairs, boosting exact equipment tag matches and critical safety limits to rank #1.
+
+### E. Document OCR & Tag Sanitizer: `RapidOCR` + `ISA-5.1 Sanitizer`
+- **Implemented in ByteForce-RAG (`app/ocr.py`)**:
+  - **Zero-Cloud, Zero-Binary Requirement**: Runs on local ONNX Runtime directly in Python without needing external Poppler or C++ Tesseract binaries.
+  - **Dynamic Scanned Detection**: Heuristically determines if a PDF page lacks digital text and automatically triggers in-memory rasterization at 200 DPI via PyMuPDF.
+  - **ISA-5.1 Optical Tag Correction**: Post-processes OCR text with deterministic regex rules to fix character misreads in instrumentation codes (e.g. `PT-l0l` -> `PT-101`, `24 VOC` -> `24 VDC`).
+  - **Provenance Guarantee**: Tags every extracted chunk with `ocr_used = True`, `ocr_confidence`, and exact `page_number`.
 
 ---
 

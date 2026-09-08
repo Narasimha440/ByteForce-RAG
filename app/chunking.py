@@ -171,8 +171,8 @@ def chunk_documents(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             # Extract technical tags specifically from this chunk
             chunk_tags = extract_tags(chunk_text)
 
-            # P0 FIX: Use global_chunk_idx to guarantee absolute uniqueness across all pages/records
-            chunk_id_str = f"c{global_chunk_idx}"
+            # Stable, page-prefixed chunk ID for guaranteed provenance and uniqueness
+            chunk_id_str = f"p{page_number}_c{chunk_offset}"
 
             chunk = {
                 "text": chunk_text,
