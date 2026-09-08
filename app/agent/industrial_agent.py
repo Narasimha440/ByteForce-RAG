@@ -5,11 +5,11 @@ from typing import Dict, List, Optional, Any
 
 import requests
 
-from .config import OLLAMA_URL, OLLAMA_MODEL
-from .domain_expansion import extract_query_equipment_tags
-from .graph_rag import get_graph_rag
-from .rag import LocalRAG
-from .vision import analyze_engineering_drawing
+from ..config import OLLAMA_URL, OLLAMA_MODEL
+from ..domain_expansion import extract_query_equipment_tags
+from ..graph_rag import get_graph_rag
+from ..rag import LocalRAG
+from ..vision import analyze_engineering_drawing
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,6 @@ class IndustrialAgent:
             elif tool_name == "query_graph":
                 tags = extract_query_equipment_tags(tool_input)
                 if not tags:
-                    # try split
                     tags = [t.strip().upper() for t in tool_input.split(",")]
                 subgraph = self.graph.get_subgraph_context(tags, depth=2)
                 return subgraph if subgraph.strip() else f"No knowledge graph entities found for {tags}."
@@ -110,7 +109,6 @@ USER QUESTION: {question}
                 if "Final Answer:" in result:
                     return result.split("Final Answer:")[-1].strip()
                     
-                # Parse Action and Action Input
                 action_match = re.search(r"Action:\s*(.*?)\n", result)
                 input_match = re.search(r"Action Input:\s*(.*)", result)
                 
