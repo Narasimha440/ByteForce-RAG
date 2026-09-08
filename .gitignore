@@ -3,5 +3,5 @@
 __pycache__
 *.pyc
 *.log
-data/qdrant_storage/
+data/qdrant_storage/.lock
 data/*.log
