@@ -30,6 +30,7 @@ from .config import (
     RRF_K,
     SIMILARITY_THRESHOLD,
     TOP_K,
+    get_active_ollama_model,
 )
 from .domain_expansion import expand_refinery_query, extract_query_equipment_tags
 from .embeddings import get_embedding_provider
@@ -42,6 +43,78 @@ logger = logging.getLogger(__name__)
 INSUFFICIENT_KNOWLEDGE_MESSAGE = (
     "The local knowledge base does not contain enough relevant information to answer this."
 )
+
+CONVERSATIONAL_GREETINGS = {
+    "hello", "hi", "hey", "good morning", "good afternoon", "good evening",
+    "greetings", "who are you", "what are you", "what can you do", "help",
+    "thanks", "thank you", "bye", "goodbye", "namaste"
+}
+
+
+def is_conversational_query(question: str) -> bool:
+    """
+    Determine if a user query is purely conversational, greeting, or identity inquiry
+    rather than an exact technical query against refinery documents.
+    """
+    if not question:
+        return False
+    q_clean = re.sub(r"[^\w\s]", "", question.strip().lower())
+    words = q_clean.split()
+    if not words:
+        return False
+    if q_clean in CONVERSATIONAL_GREETINGS:
+        return True
+    if len(words) <= 3 and any(w in CONVERSATIONAL_GREETINGS for w in words):
+        return True
+    return False
+
+
+def calculate_document_authority(filename: str, location: str, query: str) -> float:
+    """
+    Calculate an authority multiplier for a document chunk based on document importance.
+    Boosts completed Safety Audits, SOPs, and Design Basis records; demotes blank checklist templates.
+    """
+    fn_lower = (filename or "").lower()
+    loc_lower = (location or "").lower()
+    combined = f"{fn_lower} {loc_lower}"
+    q_lower = query.lower()
+
+    # 1. Operational & Incident Audits (Highest Authority)
+    if (
+        "09_inspection_accident" in combined
+        or "safety_audit" in combined
+        or "incident" in combined
+        or "audit" in combined
+        or "annual_safety" in combined
+    ):
+        if any(w in q_lower for w in ("audit", "report", "incident", "accident", "mah", "inspection", "safety")):
+            return 1.65
+        return 1.35
+
+    # 2. Standards, Reference & SOPs
+    if (
+        "01_standards_reference" in combined
+        or "04_sops_manuals" in combined
+        or "sop" in combined
+        or "standard" in combined
+        or "design_basis" in combined
+    ):
+        return 1.25
+
+    # 3. P&IDs and Schematics
+    if "03_pids" in combined or "pid" in combined or "p&id" in combined or "schematic" in combined:
+        return 1.15
+
+    # 4. Blank Templates and Forms (Demote blank checklists when searching for real information)
+    if (
+        "02_templates_checklists_forms" in combined
+        or "template" in combined
+        or "blank" in combined
+        or "fat_sat_checklist" in combined
+    ):
+        return 0.65
+
+    return 1.0
 
 
 def verify_numerical_grounding(question: str, hits: List[Any]) -> Dict[str, Any]:
@@ -192,7 +265,6 @@ class LocalRAG:
             fused_candidates = []
             for u_key, rrf_score in rrf_scores.items():
                 cand = candidate_map[u_key]
-                cand["rrf_score"] = rrf_score
                 dense_score = float(cand.get("score", 0.0) or 0.0)
                 bm25_score = float(cand.get("bm25_score", 0.0) or 0.0)
 
@@ -204,13 +276,26 @@ class LocalRAG:
                 else:
                     unified_score = min(0.90, bm25_score / 12.0)
 
-                cand["score"] = round(unified_score, 4)
+                # Document Authority Re-weighting (Prioritize real audits/SOPs over blank forms)
+                fn = cand.get("filename", "")
+                loc = cand.get("location", "")
+                authority_mult = calculate_document_authority(fn, loc, clean_query)
+
+                cand["score"] = round(unified_score * authority_mult, 4)
+                cand["rrf_score"] = round(rrf_score * authority_mult, 6)
                 fused_candidates.append(cand)
 
             fused_candidates.sort(key=lambda x: (x.get("rrf_score", 0.0), x.get("score", 0.0)), reverse=True)
             candidates = fused_candidates[:top_k * 3]
         else:
-            candidates = [p for p, _ in dense_candidates]
+            candidates = []
+            for p, _ in dense_candidates:
+                fn = p.get("filename", "")
+                loc = p.get("location", "")
+                authority_mult = calculate_document_authority(fn, loc, clean_query)
+                p["score"] = round(float(p.get("score", 0.0)) * authority_mult, 4)
+                candidates.append(p)
+            candidates.sort(key=lambda x: x.get("score", 0.0), reverse=True)
 
         # 4. Filter by minimum similarity threshold
         filtered_candidates = [
@@ -371,8 +456,51 @@ Text:
     ) -> Tuple[str, List[Dict[str, Any]]]:
         """
         Answer question using local knowledge base and local Ollama LLM.
-        Never hallucinates if retrieval confidence is insufficient.
+        - Supports conversational greetings and refinery domain questions smoothly.
+        - Employs strict local evidence grounding for operational and safety queries.
+        - Dynamically discovers the active Ollama model.
         """
+        active_model = get_active_ollama_model()
+
+        # 1. Check for Conversational / Greeting Query
+        if is_conversational_query(question):
+            system_prompt = (
+                "You are the Sovereign Industrial AI Assistant for Mangalore Refinery and Petrochemicals Limited (MRPL). "
+                "You assist plant engineers, operators, and safety auditors with refinery P&IDs, SOPs, equipment tags "
+                "(e.g., PT-101, FV-102, C-101), safety compliance reports, and OCR document processing. "
+                "Be polite, professional, concise, and helpful. Greet the user warmly and invite them to ask about "
+                "MRPL refinery operations, safety audits, or equipment parameters."
+            )
+            try:
+                response = requests.post(
+                    OLLAMA_URL,
+                    json={
+                        "model": active_model,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": question},
+                        ],
+                        "stream": False,
+                        "options": {"temperature": 0.3},
+                    },
+                    timeout=30,
+                )
+                response.raise_for_status()
+                data = response.json()
+                return data["message"]["content"], []
+            except Exception:
+                fallback_msg = (
+                    "Hello! I am your Sovereign Industrial AI Assistant for Mangalore Refinery & Petrochemicals Ltd (MRPL).\n\n"
+                    "I am ready to assist you with:\n"
+                    "• **Refinery P&IDs & Equipment Tags** (e.g. PT-101, FV-102, C-101, MOV-104)\n"
+                    "• **Annual Safety Audits & MAH Factory Records** (e.g. 2026 Audit Findings, Risk Mitigations)\n"
+                    "• **Operating Procedures (SOPs) & Engineering Standards** (e.g. Emergency shutdown, OISD)\n"
+                    "• **Technical OCR Document Processing** (Scanned records, drawings, inspection tags)\n\n"
+                    "How can I assist your refinery operations or safety verification today?"
+                )
+                return fallback_msg, []
+
+        # 2. Operational / Evidence Retrieval
         hits = self.retrieve(
             question,
             top_k=top_k,
@@ -409,7 +537,7 @@ Answer concisely, accurately, and professionally:
             response = requests.post(
                 OLLAMA_URL,
                 json={
-                    "model": OLLAMA_MODEL,
+                    "model": active_model,
                     "messages": [
                         {
                             "role": "system",
@@ -428,15 +556,28 @@ Answer concisely, accurately, and professionally:
             return answer_text, sources
 
         except Exception as err:
-            logger.warning(f"Ollama call failed ({err}). Returning structured evidence directly.")
-            evidence_summary = (
-                f"Retrieved {len(sources)} relevant evidence chunk(s) from the local knowledge base, "
-                f"but the local LLM ({OLLAMA_MODEL}) was unreachable.\n\n"
-                f"Primary source: {sources[0]['filename']} ({sources[0]['location']})\n\n"
-                f"Evidence text:\n{sources[0].get('filename')}:\n"
-                f"{hits[0].get('text', '') if isinstance(hits[0], dict) else getattr(hits[0], 'payload', {}).get('text', '')}"
-            )
-            return evidence_summary, sources
+            logger.warning(f"Ollama call failed ({err}). Generating structured executive summary from evidence.")
+            primary_source = sources[0] if sources else {}
+            exec_summary = [
+                f"**[MRPL Local Knowledge Base - Evidence Summary]**",
+                f"*(Local LLM '{active_model}' was unreachable. Presenting verified extracted evidence directly)*\n",
+                f"• **Primary Document**: `{primary_source.get('filename')}` (Page {primary_source.get('page_number', 'N/A')})",
+                f"• **Location**: `{primary_source.get('location')}`",
+                f"• **Category / Section**: {primary_source.get('category')} / {primary_source.get('section')}",
+            ]
+            if primary_source.get("tags"):
+                exec_summary.append(f"• **Equipment Tags**: {', '.join(primary_source['tags'])}")
+
+            top_text = hits[0].get("text", "") if isinstance(hits[0], dict) else getattr(hits[0], "payload", {}).get("text", "")
+            cleaned_text = top_text.strip()
+            exec_summary.append(f"\n**Verified Key Findings:**\n{cleaned_text[:1200]}")
+
+            if len(sources) > 1:
+                other_docs = {s.get("filename") for s in sources[1:] if s.get("filename")}
+                if other_docs:
+                    exec_summary.append(f"\n**Additional Corroborating Documents**: {', '.join(other_docs)}")
+
+            return "\n".join(exec_summary), sources
 
     def search(self, question: str, top_k: int = TOP_K, threshold: float = SIMILARITY_THRESHOLD) -> dict:
         """

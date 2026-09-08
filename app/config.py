@@ -15,7 +15,44 @@ QDRANT_PREFER_LOCAL = False  # If True or if QDRANT_URL is unreachable, use embe
 # Local LLM (Ollama)
 OLLAMA_URL = "http://localhost:11434/api/chat"
 OLLAMA_GENERATE_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "qwen3:8b"
+OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
+
+# Preferred Lightweight Open-Source Local Models (MRPL Enterprise Grade)
+PREFERRED_OLLAMA_MODELS = [
+    "qwen2.5:1.5b",
+    "qwen2.5:3b",
+    "qwen2.5:7b-instruct",
+    "qwen2.5:7b",
+    "deepseek-r1:8b",
+    "llama3.2:3b",
+    "llama3.2:1b",
+    "mistral:7b",
+    "qwen2.5-coder:7b",
+]
+
+def get_active_ollama_model(default_model: str = "qwen2.5:1.5b") -> str:
+    """
+    Dynamically discover installed models in local Ollama service.
+    Returns the highest-priority installed model matching PREFERRED_OLLAMA_MODELS,
+    or the first available installed model, or default_model.
+    """
+    import requests
+    try:
+        resp = requests.get(OLLAMA_TAGS_URL, timeout=1.5)
+        if resp.ok:
+            models_data = resp.json().get("models", [])
+            installed = [m.get("name", "") for m in models_data if m.get("name")]
+            if installed:
+                for pref in PREFERRED_OLLAMA_MODELS:
+                    for inst in installed:
+                        if pref == inst or pref in inst or inst.startswith(pref.split(":")[0]):
+                            return inst
+                return installed[0]
+    except Exception:
+        pass
+    return default_model
+
+OLLAMA_MODEL = get_active_ollama_model()
 OLLAMA_VISION_MODEL = "llava"  # or minicpm-v
 
 # Embedding Provider

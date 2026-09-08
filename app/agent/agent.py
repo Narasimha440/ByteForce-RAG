@@ -2,7 +2,7 @@ import json
 import requests
 
 from app.rag import LocalRAG
-from app.config import OLLAMA_URL, OLLAMA_MODEL
+from app.config import OLLAMA_URL, OLLAMA_MODEL, get_active_ollama_model
 
 
 class Agent:
@@ -11,10 +11,11 @@ class Agent:
         self.rag = LocalRAG()
 
     def call_llm(self, prompt, temperature=0.1):
+        model = get_active_ollama_model()
         response = requests.post(
             OLLAMA_URL,
             json={
-                "model": OLLAMA_MODEL,
+                "model": model,
                 "messages": [
                     {
                         "role": "system",
@@ -34,10 +35,11 @@ class Agent:
         return response.json()["message"]["content"]
 
     def call_llm_stream(self, prompt, temperature=0.1):
+        model = get_active_ollama_model()
         response = requests.post(
             OLLAMA_URL,
             json={
-                "model": OLLAMA_MODEL,
+                "model": model,
                 "messages": [
                     {
                         "role": "system",
@@ -280,9 +282,10 @@ Provide a clear and professional answer.
 
             prompt = self.build_rag_prompt(question, context)
 
+            model_name = get_active_ollama_model()
             yield {
                 "type": "step",
-                "message": "Sending grounded evidence to Qwen3...",
+                "message": f"Sending grounded evidence to {model_name}...",
             }
 
         else:
@@ -300,11 +303,12 @@ Provide a clear and professional answer.
 
             prompt = self.build_general_prompt(question)
 
-        steps.append("Generating response with Qwen3")
+        model_name = get_active_ollama_model()
+        steps.append(f"Generating response with {model_name}")
 
         yield {
             "type": "step",
-            "message": "Generating response with Qwen3...",
+            "message": f"Generating response with {model_name}...",
         }
 
         yield {"type": "answer_start"}
