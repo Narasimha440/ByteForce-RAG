@@ -1,0 +1,87 @@
+filename,category,extension,recommended_processing,retrieval_mode
+470d35a23e9248408467cb7ebcb2d302.pdf,10_Public_Reference,pdf,pdf_text_and_ocr_if_needed,text_or_structured
+Appendix A-1 - Standards Deviation Request Form.docx,02_Templates_Checklists_Forms,docx,text_structure_extraction,text_or_structured
+Appendix A-2 - Standards Revision Request Form.docx,02_Templates_Checklists_Forms,docx,text_structure_extraction,text_or_structured
+Appendix A-3 - Standard Software Revision Request Form.docx,02_Templates_Checklists_Forms,docx,text_structure_extraction,text_or_structured
+Appendix B-1 - Matrix of Design Phases and Deliverables.xlsx,02_Templates_Checklists_Forms,xlsx,table_structured_extraction,text_or_structured
+Appendix B-10 - Controller and Instrumentation Inventory Sheets.xlsx,02_Templates_Checklists_Forms,xlsx,table_structured_extraction,text_or_structured
+Appendix B-2 - Control Systems Integrator Pre-Selection Document Template.docx,02_Templates_Checklists_Forms,docx,text_structure_extraction,text_or_structured
+"Appendix B-3 - Vendor Package SCADA, Controls and Instrumentation Spec Template.docx",02_Templates_Checklists_Forms,docx,text_structure_extraction,text_or_structured
+Appendix B-4 - Panel Hardware FAT Plan Template.docx,02_Templates_Checklists_Forms,docx,text_structure_extraction,text_or_structured
+Appendix B-5 - Control System Software FAT Plan Template.docx,02_Templates_Checklists_Forms,docx,text_structure_extraction,text_or_structured
+Appendix B-6 - IO and Software Variables Checklists.xlsx,02_Templates_Checklists_Forms,xlsx,table_structured_extraction,text_or_structured
+Appendix B-7 - Panel Installation Check Sheet.xlsx,02_Templates_Checklists_Forms,xlsx,table_structured_extraction,text_or_structured
+Appendix B-8 - Instrument Installation and CalibrationChecklist.xlsx,02_Templates_Checklists_Forms,xlsx,table_structured_extraction,text_or_structured
+Appendix B-9 - Commissioning Flow Chart.pptx,02_Templates_Checklists_Forms,pptx,slide_text_and_image_extraction,text_or_structured
+Appendix C-1 - Add Equipment and Maintenance Forms.xlsx,02_Templates_Checklists_Forms,xlsx,table_structured_extraction,text_or_structured
+"Appendix D-1, C6642-1 Standard P&ID Legend Drawings (1).dwg",03_PIDs,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-1, C6642-2 Standard P&ID Legend Drawings (2).dwg",03_PIDs,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-1, C6642-3 Standard P&ID Legend Drawings (3).dwg",03_PIDs,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-10, C6642-47 Typical Equipment IO Interface.dwg",03_PIDs,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-2, C6642-10 Sample P&IDs, 07-Typical Chlorinators.dwg",03_PIDs,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-2, C6642-11 Sample P&IDs, 08-Typical Hazardous Gas Monitoring.dwg",03_PIDs,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-2, C6642-12 Sample P&IDs, 09-Typical Emergency Generator & Misc. Services.dwg",03_PIDs,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-2, C6642-13 Sample P&IDs, 10-Typical Filter Backwash Station.dwg",03_PIDs,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-2, C6642-14 Sample P&IDs, 11-Sample P&ID with Typical IO and Controls.dwg",03_PIDs,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-2, C6642-4 Sample P&IDs, 01-Typical Well.dwg",03_PIDs,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-2, C6642-5 Sample P&IDs, 02-Typical Valve Chamber.dwg",03_PIDs,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-2, C6642-6 Sample P&IDs, 03-Typical Meter Chamber.dwg",03_PIDs,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-2, C6642-7 Sample P&IDs, 04-Typical Lift Station (2 pumps).dwg",03_PIDs,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-2, C6642-8 Sample P&IDs, 05-Typical Water Tower.dwg",03_PIDs,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-2, C6642-9 Sample P&IDs, 06-Typical Chemical Metering.dwg",03_PIDs,dwg,render_to_image_then_vision_ocr,multimodal
+Appendix D-4 - Process Control Narrative.docx,01_Standards_Reference,docx,text_structure_extraction,text_or_structured
+Appendix D-5 - Approved Instrument and Equipment Manufacturers.docx,01_Standards_Reference,docx,text_structure_extraction,text_or_structured
+"Appendix D-6, A2463-1 Standard Instr. Mounting Details - 01-Ultrasonic Level (Channel) .dwg",04_Instrumentation_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-6, A2463-10 Standard Instr. Mounting Details - 10-Gas Sample.dwg",04_Instrumentation_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-6, A2463-11 Standard Instr. Mounting Details - 11-Free Chlorine Analyzer.dwg",04_Instrumentation_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-6, A2463-2 Standard Instr. Mounting Details - 02-Ultrasonic Level (Tank).dwg",04_Instrumentation_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-6, A2463-3 Standard Instr. Mounting Details - 03-Depth & Level Probe.dwg",04_Instrumentation_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-6, A2463-4 Standard Instr. Mounting Details - 04-Float Level Switch.dwg",04_Instrumentation_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-6, A2463-5 Standard Instr. Mounting Details - 05-Magnetic Flow Meter_Sensor.dwg",04_Instrumentation_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-6, A2463-6 Standard Instr. Mounting Details - 06-Magnetic Flow Meter.dwg",04_Instrumentation_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-6, A2463-7 Standard Instr. Mounting Details - 07-Pressure Transmitter.dwg",04_Instrumentation_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-6, A2463-8 Standard Instr. Mounting Details - 08-Temperature Thermowell.dwg",04_Instrumentation_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-6, A2463-9 Standard Instr. Mounting Details - 09-Gas Sensor & Transmitter.dwg",04_Instrumentation_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-7 - Standard Specifications, Instrument Control Panels.docx",01_Standards_Reference,docx,text_structure_extraction,text_or_structured
+"Appendix D-7 - Standard Specifications, Instrumentation and Controls General.docx",01_Standards_Reference,docx,text_structure_extraction,text_or_structured
+"Appendix D-7 - Standard Specifications, Instrumentation Specification General.docx",01_Standards_Reference,docx,text_structure_extraction,text_or_structured
+"Appendix D-8, C6642-15 Control Panel Drawings, 01-Typical 2 Door Panel Layout.dwg",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-16 Control Panel Drawings, 02-Typical Bill of Materials.dwg",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-17 Control Panel Drawings, 03-Typical 120 VAC Control Wiring.dwg",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-18 Control Panel Drawings, 04-Typical 24 VDC Control Wiring.dwg",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-19 Control Panel Drawings, 05-Typical Digital Input Card & Ethernet Module.dwg",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-20 Control Panel Drawings, 06-Typical Digital Output Card.dwg",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-21 Control Panel Drawings, 07-Typical Analog Input Card.dwg",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-22 Control Panel Drawings, 08-Typical Analog Output Card.dwg",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-23 Control Panel Drawings, 01 Sample ICP Drawings Title Page.DWG",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-24 Control Panel Drawings, 02 Sample ICP Drawing Index.DWG",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-25 Control Panel Drawings, 03 Sample ICP External Panel Layout.DWG",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-26 Control Panel Drawings, 04 Sample ICP Internal Panel Layout and BOM.DWG",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-27 Control Panel Drawings, 05 Sample ICP PLC Module Layout.DWG",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-28 Control Panel Drawings, 06 Sample ICP Communication Diagram.dwg",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-29 Control Panel Drawings, 07 Sample ICP AC Power Distribution.dwg",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-30 Control Panel Drawings, 08 Sample ICP DC Power Distribution.DWG",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-31 Control Panel Drawings, 09 Sample ICP R0S03 Digital Inputs.DWG",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-32 Control Panel Drawings, 10 Sample ICP R0S04 Digital Inputs.DWG",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-33 Control Panel Drawings, 11 Sample ICP R0S05 Digital Inputs.DWG",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-34 Control Panel Drawings, 12 Sample ICP R0S06 Digital Inputs.DWG",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-35 Control Panel Drawings, 13 Sample ICP R0S07 Digital Inputs.DWG",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-36 Control Panel Drawings, 14 Sample ICP R0S08 Digital Outputs.DWG",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-37 Control Panel Drawings, 15 Sample ICP R0S09 Digital Outputs.DWG",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-38 Control Panel Drawings, 16 Sample ICP R0S12 Analog Inputs.DWG",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-39 Control Panel Drawings, 17 Sample ICP R0S13 Analog Inputs.DWG",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-40 Control Panel Drawings, 18 Sample ICP R0S14 Analog Outputs.DWG",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-41 Control Panel Drawings, 19 Sample ICP R0S15 Analog Outputs.DWG",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-42 Control Panel Drawings, 20 Sample ICP R1S01 Digital Inputs.DWG",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-43 Control Panel Drawings, 21 Sample ICP R1S02 Digital Inputs.DWG",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-44 Control Panel Drawings, 22 Sample ICP R1S03 Digital Inputs.DWG",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-45 Control Panel Drawings, 23 Sample ICP R1S04 Digital Inputs.DWG",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+"Appendix D-8, C6642-46 Control Panel Drawings, 24 Sample ICP R1S05 Digital Outputs.DWG",05_Control_Panel_Drawings,dwg,render_to_image_then_vision_ocr,multimodal
+Appendix D-9 - Wiring Identification and Labelling.docx,01_Standards_Reference,docx,text_structure_extraction,text_or_structured
+"Appendix F-1, Sample Network Architecture Drawing.dwg",07_Network_Architecture,dwg,render_to_image_then_vision_ocr,multimodal
+Appendix G-1 - Standard SCADA Computer Hardware Configuration Specification.docx,08_SCADA,docx,text_structure_extraction,text_or_structured
+Appendix G-2 - Sample SCADA Screens.pdf,08_SCADA,pdf,pdf_text_and_ocr_if_needed,text_or_structured
+check_list_for_preparing_accident_investigation_report.pdf,09_Inspection_Accident,pdf,pdf_text_and_ocr_if_needed,text_or_structured
+Checklist_for_inspection_of_2-cb-MAH_Factories.pdf,09_Inspection_Accident,pdf,pdf_text_and_ocr_if_needed,text_or_structured
+Inspection_Report_Format_Checklis.pdf,09_Inspection_Accident,pdf,pdf_text_and_ocr_if_needed,text_or_structured
+"SCADA, Controls & Instrumentation Systems Design Standards Manual_April, 2018_FINAL.pdf",01_Standards_Reference,pdf,pdf_text_and_ocr_if_needed,text_or_structured

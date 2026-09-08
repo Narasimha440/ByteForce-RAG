@@ -1,0 +1,11 @@
+networkx
+openpyxl
+pillow
+pymupdf
+pypdf
+python-docx
+qdrant-client
+rapidocr-onnxruntime
+requests
+sentence-transformers
+streamlit
