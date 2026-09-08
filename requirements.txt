@@ -4,8 +4,10 @@ pillow
 pymupdf
 pypdf
 python-docx
+python-pptx
 qdrant-client
 rapidocr-onnxruntime
 requests
 sentence-transformers
 streamlit
+
