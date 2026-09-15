@@ -186,6 +186,39 @@ def verify_numerical_grounding(question: str, hits: List[Any]) -> Dict[str, Any]
         }
 
 
+
+import hashlib
+from collections import OrderedDict
+from typing import Optional, Tuple
+
+class SemanticCache:
+    """Enterprise LRU Semantic Cache for instantly answering similar queries."""
+    def __init__(self, capacity: int = 5000):
+        self.capacity = capacity
+        self.cache: OrderedDict[str, Tuple[str, list, str]] = OrderedDict()
+    
+    def _get_hash(self, query: str) -> str:
+        import re
+        norm = re.sub(r'[^\w\s]', '', query.lower()).strip()
+        return hashlib.sha256(norm.encode('utf-8')).hexdigest()
+        
+    def get(self, query: str) -> Optional[Tuple[str, list, str]]:
+        q_hash = self._get_hash(query)
+        if q_hash in self.cache:
+            self.cache.move_to_end(q_hash)
+            return self.cache[q_hash]
+        return None
+        
+    def put(self, query: str, answer: str, sources: list, confidence: str):
+        q_hash = self._get_hash(query)
+        self.cache[q_hash] = (answer, sources, confidence)
+        self.cache.move_to_end(q_hash)
+        if len(self.cache) > self.capacity:
+            self.cache.popitem(last=False)
+
+_GLOBAL_SEMANTIC_CACHE = SemanticCache()
+
+
 class LocalRAG:
 
     def __init__(self, embedding_provider=None, vector_store=None, bm25_index=None, reranker=None):
@@ -560,6 +593,12 @@ Answer (with inline source citations):
         filter_criteria: Optional[Dict[str, Any]] = None,
         history: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[str, List[Dict[str, Any]], str]:
+        # --- ENTERPRISE SEMANTIC CACHE ---
+        cached = _GLOBAL_SEMANTIC_CACHE.get(question)
+        if cached and not history:
+            logger.info("Semantic Cache HIT: Returning 0-latency cached answer.")
+            return cached[0], cached[1], cached[2]
+        # ---------------------------------
         """
         Answer question using local knowledge base and local Ollama LLM.
         - Supports conversational greetings and refinery domain questions smoothly.
