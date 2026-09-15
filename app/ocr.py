@@ -53,14 +53,66 @@ def is_text_insufficient(text: Optional[str], min_length: int = OCR_MIN_TEXT_LEN
     return False
 
 
-def preprocess_image_for_ocr(image: Union[Image.Image, Path, str]) -> Image.Image:
+def _deskew_image(pil_img: Image.Image) -> Image.Image:
     """
-    Industrial scan preprocessor for RapidOCR:
-    1. Normalizes image to RGB PIL Image.
-    2. Measures dynamic range; applies auto-contrast stretch if the scan is low-contrast,
-       faded, or carbon-copy (preserving pristine digital text without artifact ringing).
-    3. Optional contour-based deskewing if image is tilted.
+    Detect and correct image tilt using OpenCV contour analysis.
+    Corrects skew angles up to ±15°. Skips if tilt < 0.5° (near-straight).
+    Returns the deskewed image (or original if correction is not needed/possible).
     """
+    try:
+        import cv2
+        import numpy as np
+
+        arr = np.array(pil_img.convert("L"))
+        # Threshold to find text/ink regions
+        _, thresh = cv2.threshold(arr, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        coords = np.column_stack(np.where(thresh > 0))
+        if len(coords) < 100:
+            return pil_img  # Not enough content to measure skew
+
+        rect  = cv2.minAreaRect(coords)
+        angle = rect[-1]
+
+        # minAreaRect angle is in (-90, 0]; adjust to get actual tilt
+        if angle < -45:
+            angle += 90
+
+        # Skip correction for negligible tilt
+        if abs(angle) < 0.5:
+            return pil_img
+
+        logger.debug(f"Deskew: detected angle {angle:.2f}°, correcting...")
+        (h, w) = arr.shape
+        center = (w // 2, h // 2)
+        M      = cv2.getRotationMatrix2D(center, angle, 1.0)
+        rotated = cv2.warpAffine(
+            np.array(pil_img.convert("RGB")), M, (w, h),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REPLICATE,
+        )
+        return Image.fromarray(rotated)
+    except Exception as exc:
+        logger.debug(f"Deskew skipped: {exc}")
+        return pil_img
+
+
+def preprocess_image_for_ocr(
+    image: Union[Image.Image, Path, str],
+    tier: str = "light",
+) -> Image.Image:
+    """
+    Tiered image preprocessor for industrial OCR.
+
+    Tier selection:
+      - "skip"  : Return image as-is (digital clean renders, already high-quality)
+      - "light" : Autocontrast + mild sharpening + deskew if tilted
+      - "heavy" : Gaussian denoise + Otsu binarization + adaptive threshold + deskew
+
+    The tier is assigned per-page by ocr_router.classify_page() so that
+    clean digital PDFs are processed instantly while faded field inspection
+    sheets get the full treatment.
+    """
+    # Normalize to RGB PIL Image
     if isinstance(image, (str, Path)):
         pil_img = Image.open(str(image)).convert("RGB")
     elif isinstance(image, Image.Image):
@@ -69,16 +121,74 @@ def preprocess_image_for_ocr(image: Union[Image.Image, Path, str]) -> Image.Imag
         import numpy as np
         pil_img = Image.fromarray(np.array(image)).convert("RGB")
 
-    try:
-        import numpy as np
-        arr = np.array(pil_img)
-        min_val, max_val = int(arr.min()), int(arr.max())
-        # If the image has low dynamic range (faded, dark, or washed-out scan)
-        if min_val > 25 or max_val < 230:
-            pil_img = ImageOps.autocontrast(pil_img, cutoff=0.5)
-    except Exception as exc:
-        logger.debug(f"Image preprocessing fallback: {exc}")
+    tier = (tier or "light").lower()
 
+    # ── SKIP tier: return immediately ────────────────────────────────────────
+    if tier == "skip":
+        return pil_img
+
+    # ── LIGHT tier: autocontrast + sharpening + deskew ───────────────────────
+    if tier == "light":
+        try:
+            import numpy as np
+            arr = np.array(pil_img)
+            min_val, max_val = int(arr.min()), int(arr.max())
+            if min_val > 25 or max_val < 230:
+                pil_img = ImageOps.autocontrast(pil_img, cutoff=0.5)
+        except Exception as exc:
+            logger.debug(f"Light autocontrast failed: {exc}")
+
+        try:
+            from PIL import ImageFilter
+            pil_img = pil_img.filter(ImageFilter.SHARPEN)
+        except Exception:
+            pass
+
+        pil_img = _deskew_image(pil_img)
+        return pil_img
+
+    # ── HEAVY tier: denoise + binarize + deskew ───────────────────────────────
+    # Used for: faded carbon copies, old field reports, dark/noisy scans
+    try:
+        import cv2
+        import numpy as np
+
+        arr_rgb = np.array(pil_img)
+        gray    = cv2.cvtColor(arr_rgb, cv2.COLOR_RGB2GRAY)
+
+        # Step 1: Gaussian denoising
+        denoised = cv2.GaussianBlur(gray, (3, 3), 0)
+
+        # Step 2: Otsu global binarization
+        _, binary_otsu = cv2.threshold(
+            denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+        )
+
+        # Step 3: Adaptive threshold (handles uneven illumination in field photos)
+        adaptive = cv2.adaptiveThreshold(
+            denoised, 255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY, 31, 10
+        )
+
+        # Blend: take the lighter result to preserve faint ink
+        blended = cv2.max(binary_otsu, adaptive)
+
+        # Convert back to RGB for RapidOCR compatibility
+        pil_img = Image.fromarray(cv2.cvtColor(blended, cv2.COLOR_GRAY2RGB))
+
+    except ImportError:
+        # OpenCV not available — fallback to autocontrast
+        logger.debug("Heavy tier: OpenCV unavailable, falling back to autocontrast")
+        try:
+            pil_img = ImageOps.autocontrast(pil_img, cutoff=1.0)
+        except Exception:
+            pass
+    except Exception as exc:
+        logger.warning(f"Heavy preprocessing failed: {exc}")
+
+    # Always deskew in heavy mode
+    pil_img = _deskew_image(pil_img)
     return pil_img
 
 
@@ -88,7 +198,7 @@ class BaseOCREngine(ABC):
 
     @abstractmethod
     def extract_text_from_image(
-        self, image: Union[Image.Image, Path, str]
+        self, image: Union[Image.Image, Path, str], tier: str = "light"
     ) -> Tuple[str, float]:
         """
         Extract text from an image.
@@ -132,7 +242,7 @@ class RapidOCREngine(BaseOCREngine):
         return self._get_engine() is not None
 
     def extract_layout_from_image(
-        self, image: Union[Image.Image, Path, str], preprocess: bool = True
+        self, image: Union[Image.Image, Path, str], tier: str = "light"
     ) -> Dict[str, Any]:
         """
         Extract structured layout with physical bounding box coordinates [x1, y1, x2, y2].
@@ -144,8 +254,8 @@ class RapidOCREngine(BaseOCREngine):
 
         import numpy as np
 
-        if preprocess:
-            pil_img = preprocess_image_for_ocr(image)
+        if tier and tier != "skip":
+            pil_img = preprocess_image_for_ocr(image, tier=tier)
         elif isinstance(image, (str, Path)):
             pil_img = Image.open(str(image)).convert("RGB")
         elif isinstance(image, Image.Image):
@@ -232,9 +342,9 @@ class RapidOCREngine(BaseOCREngine):
         }
 
     def extract_text_from_image(
-        self, image: Union[Image.Image, Path, str]
+        self, image: Union[Image.Image, Path, str], tier: str = "light"
     ) -> Tuple[str, float]:
-        layout = self.extract_layout_from_image(image, preprocess=True)
+        layout = self.extract_layout_from_image(image, tier=tier)
         return layout["text"], layout["average_confidence"]
 
 
@@ -256,7 +366,7 @@ class TesseractOCREngine(BaseOCREngine):
         return self._available
 
     def extract_text_from_image(
-        self, image: Union[Image.Image, Path, str]
+        self, image: Union[Image.Image, Path, str], tier: str = "light"
     ) -> Tuple[str, float]:
         if not self.is_available():
             raise RuntimeError("Tesseract is not installed or available on PATH.")
@@ -582,7 +692,7 @@ def get_page_ocr_quality_report(
     for page_num in range(1, total_pages + 1):
         try:
             img = render_pdf_page_to_image(pdf_path, page_num, dpi=dpi)
-            layout = extract_layout_with_ocr(img, sanitize_tags=True, preprocess=True)
+            layout = extract_layout_with_ocr(img, sanitize_tags=True, tier="light")
             table_info = detect_table_structure(layout)
             avg_conf = layout.get("average_confidence", 0.0)
             report.append({
@@ -609,6 +719,7 @@ def get_page_ocr_quality_report(
 def extract_text_with_ocr(
     image_or_path: Union[Image.Image, Path, str],
     sanitize_tags: bool = True,
+    tier: str = "light",
 ) -> Tuple[str, float]:
     """
     Convenience function to run OCR on an image or file path,
@@ -618,16 +729,18 @@ def extract_text_with_ocr(
         Tuple of (extracted_text, average_confidence)
     """
     engine = get_ocr_engine()
-    raw_text, conf = engine.extract_text_from_image(image_or_path)
+    raw_text, conf = engine.extract_text_from_image(image_or_path, tier=tier)
     if sanitize_tags and raw_text:
-        raw_text = sanitize_industrial_tags(raw_text)
+        from .ocr_postprocess import postprocess_ocr_text
+        res = postprocess_ocr_text(raw_text, conf, log_corrections=True)
+        raw_text = res["text"]
     return raw_text, conf
 
 
 def extract_layout_with_ocr(
     image_or_path: Union[Image.Image, Path, str],
     sanitize_tags: bool = True,
-    preprocess: bool = True,
+    tier: str = "light",
 ) -> Dict[str, Any]:
     """
     Run local OCR on an image or file path and return structured layout
@@ -635,9 +748,9 @@ def extract_layout_with_ocr(
     """
     engine = get_ocr_engine()
     if hasattr(engine, "extract_layout_from_image"):
-        layout = engine.extract_layout_from_image(image_or_path, preprocess=preprocess)
+        layout = engine.extract_layout_from_image(image_or_path, tier=tier)
     else:
-        text, conf = engine.extract_text_from_image(image_or_path)
+        text, conf = engine.extract_text_from_image(image_or_path, tier=tier)
         layout = {
             "text": text,
             "average_confidence": conf,
@@ -646,9 +759,13 @@ def extract_layout_with_ocr(
         }
 
     if sanitize_tags and layout.get("text"):
-        layout["text"] = sanitize_industrial_tags(layout["text"])
+        from .ocr_postprocess import postprocess_ocr_text
+        res = postprocess_ocr_text(layout["text"], layout.get("average_confidence", 1.0))
+        layout["text"] = res["text"]
+        
         for block in layout.get("blocks", []):
-            block["text"] = sanitize_industrial_tags(block["text"])
+            block_res = postprocess_ocr_text(block["text"], block.get("confidence", 1.0), log_corrections=False)
+            block["text"] = block_res["text"]
 
     return layout
 

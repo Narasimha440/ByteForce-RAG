@@ -63,15 +63,13 @@ _layout_parser = LayoutLMv3Parser()
 
 def parse_pdf(path: Path) -> List[Dict[str, Any]]:
     """
-    Parse PDF documents page-by-page.
-
-    If native text is present and sufficient, extracts text directly.
-    If native text is empty or insufficient (scanned/image-only), renders the
-    page locally and applies local OCR, preserving page numbers and provenance.
+    Parse PDF documents page-by-page with adaptive OCR routing.
     """
     results: List[Dict[str, Any]] = []
+    
+    from .ocr_router import route_document_page
+    from .ocr import extract_layout_with_ocr, detect_table_structure
 
-    # First attempt: PyMuPDF if available for fast page reading & rendering, or pypdf
     use_mupdf = False
     try:
         import pymupdf
@@ -89,198 +87,136 @@ def parse_pdf(path: Path) -> List[Dict[str, Any]]:
                 page = doc.load_page(page_idx)
                 native_text = (page.get_text() or "").strip()
 
-                if not is_text_insufficient(native_text):
+                from .config import OCR_ENABLED
+                from .ocr import render_pdf_page_to_image, is_text_insufficient
+                
+                try:
+                    thumb_img = render_pdf_page_to_image(path, page_number, dpi=100)
+                    route_info = route_document_page(thumb_img, native_text=native_text, filename=path.name)
+                except Exception as e:
+                    logger.warning(f"Routing failed for {path.name} page {page_number}: {e}")
+                    route_info = {"skip_ocr": False, "dpi": 200, "tier": "light", "page_type": "scanned_light", "has_handwriting": False}
+
+                if route_info["skip_ocr"]:
                     results.append({
                         "text": native_text,
+                        "sections": [],
+                        "tables": [],
                         "source": str(path),
                         "filename": path.name,
                         "location": f"Page {page_number}",
                         "page_number": page_number,
                         "file_type": "pdf",
                         "content_type": "document",
+                        "page_type": route_info["page_type"],
+                        "has_handwriting": route_info["has_handwriting"],
                         "extraction_method": "native_text",
                         "ocr_used": False,
                         "ocr_confidence": None,
-                        "section": None,
                     })
-                elif OCR_ENABLED:
-                    logger.info(
-                        f"Page {page_number} of {path.name} has insufficient native text. "
-                        f"Triggering local OCR..."
-                    )
+                elif getattr(sys.modules.get('app.config'), 'OCR_ENABLED', True):
+                    logger.info(f"Page {page_number} ({route_info['page_type']}): OCR at {route_info['dpi']} DPI, Tier: {route_info['tier']}")
                     try:
-                        rendered_img = render_pdf_page_to_image(path, page_number)
+                        # Re-render at target DPI
+                        rendered_img = render_pdf_page_to_image(path, page_number, dpi=route_info["dpi"])
+                        layout = extract_layout_with_ocr(rendered_img, tier=route_info["tier"])
                         
-                        ocr_text = ""
-                        avg_conf = 0.0
+                        ocr_text = layout.get("text", "")
+                        avg_conf = layout.get("average_confidence", 0.0)
                         
-                        if _layout_parser.is_available():
-                            try:
-                                ocr_text = _layout_parser.parse_image(rendered_img)
-                                avg_conf = 0.95
-                            except Exception as layout_err:
-                                logger.info(f"LayoutLMv3 failed/skipped, falling back to RapidOCR: {layout_err}")
-                                ocr_text, avg_conf = extract_text_with_ocr(rendered_img)
-                        else:
-                            ocr_text, avg_conf = extract_text_with_ocr(rendered_img)
-
+                        table_info = detect_table_structure(layout)
+                        tables = [table_info] if table_info["is_table"] else []
+                        
                         if ocr_text.strip():
                             results.append({
                                 "text": ocr_text.strip(),
+                                "sections": [],
+                                "tables": tables,
                                 "source": str(path),
                                 "filename": path.name,
                                 "location": f"Page {page_number}",
                                 "page_number": page_number,
                                 "file_type": "pdf",
                                 "content_type": "scanned_document",
+                                "page_type": route_info["page_type"],
+                                "has_handwriting": route_info["has_handwriting"],
                                 "extraction_method": "ocr",
                                 "ocr_used": True,
                                 "ocr_confidence": avg_conf,
-                                "section": None,
                             })
                     except Exception as ocr_err:
-                        logger.warning(
-                            f"OCR failed for {path.name} page {page_number}: {ocr_err}"
-                        )
+                        logger.warning(f"OCR failed for {path.name} page {page_number}: {ocr_err}")
                 elif native_text:
-                    # OCR disabled but minimal text exists
                     results.append({
                         "text": native_text,
+                        "sections": [],
+                        "tables": [],
                         "source": str(path),
                         "filename": path.name,
                         "location": f"Page {page_number}",
                         "page_number": page_number,
                         "file_type": "pdf",
                         "content_type": "document",
+                        "page_type": "digital_clean",
+                        "has_handwriting": False,
                         "extraction_method": "native_text",
                         "ocr_used": False,
                         "ocr_confidence": None,
-                        "section": None,
                     })
 
             doc.close()
             return results
-
         except Exception as fitz_err:
-            logger.warning(f"PyMuPDF failed on {path.name}: {fitz_err}. Trying pypdf fallback.")
-
-    # Fallback to pypdf
-    from pypdf import PdfReader
-
-    try:
-        reader = PdfReader(str(path))
-        for page_number, page in enumerate(reader.pages, start=1):
-            native_text = (page.extract_text() or "").strip()
-
-            if not is_text_insufficient(native_text):
-                results.append({
-                    "text": native_text,
-                    "source": str(path),
-                    "filename": path.name,
-                    "location": f"Page {page_number}",
-                    "page_number": page_number,
-                    "file_type": "pdf",
-                    "content_type": "document",
-                    "extraction_method": "native_text",
-                    "ocr_used": False,
-                    "ocr_confidence": None,
-                    "section": None,
-                })
-            elif OCR_ENABLED:
-                logger.info(
-                    f"Page {page_number} of {path.name} has insufficient native text. "
-                    f"Triggering local OCR fallback..."
-                )
-                try:
-                    rendered_img = render_pdf_page_to_image(path, page_number)
-                    
-                    ocr_text = ""
-                    avg_conf = 0.0
-                    
-                    if _layout_parser.is_available():
-                        try:
-                            ocr_text = _layout_parser.parse_image(rendered_img)
-                            avg_conf = 0.95
-                        except Exception as layout_err:
-                            logger.info(f"LayoutLMv3 failed/skipped, falling back to RapidOCR: {layout_err}")
-                            ocr_text, avg_conf = extract_text_with_ocr(rendered_img)
-                    else:
-                        ocr_text, avg_conf = extract_text_with_ocr(rendered_img)
-                    if ocr_text.strip():
-                        results.append({
-                            "text": ocr_text.strip(),
-                            "source": str(path),
-                            "filename": path.name,
-                            "location": f"Page {page_number}",
-                            "page_number": page_number,
-                            "file_type": "pdf",
-                            "content_type": "scanned_document",
-                            "extraction_method": "ocr",
-                            "ocr_used": True,
-                            "ocr_confidence": avg_conf,
-                            "section": None,
-                        })
-                except Exception as ocr_err:
-                    logger.warning(f"OCR failed for {path.name} page {page_number}: {ocr_err}")
-            elif native_text:
-                results.append({
-                    "text": native_text,
-                    "source": str(path),
-                    "filename": path.name,
-                    "location": f"Page {page_number}",
-                    "page_number": page_number,
-                    "file_type": "pdf",
-                    "content_type": "document",
-                    "extraction_method": "native_text",
-                    "ocr_used": False,
-                    "ocr_confidence": None,
-                    "section": None,
-                })
-
-    except Exception as exc:
-        logger.error(f"Error parsing PDF {path.name}: {exc}")
-        raise
+            logger.warning(f"PyMuPDF failed on {path.name}: {fitz_err}")
+            raise
 
     return results
 
-
 def parse_image(path: Path) -> List[Dict[str, Any]]:
     """
-    Parse image files (.png, .jpg, .jpeg, .webp) using local OCR.
+    Parse image files (.png, .jpg, .jpeg, .webp) using adaptive OCR.
     """
+    from .config import OCR_ENABLED
     if not OCR_ENABLED:
         logger.warning(f"OCR is disabled. Skipping image file: {path.name}")
         return []
 
     try:
-        ocr_text = ""
-        avg_conf = 0.0
+        from PIL import Image
+        from .ocr_router import route_document_page
+        from .ocr import extract_layout_with_ocr, detect_table_structure
+
+        pil_img = Image.open(str(path)).convert("RGB")
+        route_info = route_document_page(pil_img, filename=path.name)
         
-        if _layout_parser.is_available():
-            try:
-                ocr_text = _layout_parser.parse_image(path)
-                avg_conf = 0.95
-            except Exception as layout_err:
-                logger.info(f"LayoutLMv3 failed/skipped, falling back to RapidOCR: {layout_err}")
-                ocr_text, avg_conf = extract_text_with_ocr(path)
-        else:
-            ocr_text, avg_conf = extract_text_with_ocr(path)
+        logger.info(f"Image {path.name} ({route_info['page_type']}): OCR Tier: {route_info['tier']}")
+        
+        layout = extract_layout_with_ocr(pil_img, tier=route_info["tier"])
+        ocr_text = layout.get("text", "")
+        avg_conf = layout.get("average_confidence", 0.0)
+        
+        table_info = detect_table_structure(layout)
+        tables = [table_info] if table_info["is_table"] else []
+
         if not ocr_text.strip():
             return []
 
         file_type = path.suffix.lower().lstrip(".")
         return [{
             "text": ocr_text.strip(),
+            "sections": [],
+            "tables": tables,
             "source": str(path),
             "filename": path.name,
             "location": "Image",
             "page_number": 1,
             "file_type": file_type,
             "content_type": "image",
+            "page_type": route_info["page_type"],
+            "has_handwriting": route_info["has_handwriting"],
             "extraction_method": "ocr",
             "ocr_used": True,
             "ocr_confidence": avg_conf,
-            "section": None,
         }]
     except Exception as exc:
         logger.error(f"Error running OCR on image {path.name}: {exc}")

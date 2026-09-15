@@ -87,5 +87,5 @@ OCR_ENGINE = "rapidocr"  # "rapidocr", "tesseract", "auto", "mock"
 OCR_LANGUAGE = "en"
 OCR_MIN_TEXT_LENGTH = 50  # Characters below which a page is treated as scanned/insufficient
 OCR_CONFIDENCE_THRESHOLD = 0.65  # Raised from 0.50 — filters low-confidence OCR noise
-OCR_DPI = 250  # Raised from 200 — higher resolution for engineering drawings and fine print
+OCR_DPI = 250  # Fallback DPI for the quality reporting tool; adaptive DPI is now used during ingestion
 OCR_TABLE_DETECTION_ENABLED = True  # Detect and preserve table structure during OCR
