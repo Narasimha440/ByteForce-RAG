@@ -7,6 +7,10 @@ class Planner:
     ALLOWED_TOOLS = {
         "rag_search",
         "generate_response",
+        "python_repl",
+        "create_excel_report",
+        "create_word_document",
+        "create_ppt_presentation"
     }
 
     MAX_STEPS = 5
@@ -132,6 +136,38 @@ Parameters:
 Parameters:
 {{}}
 
+3. python_repl
+Executes a python script locally. Use this for calculations, data processing, and bug solving.
+Parameters:
+{{
+    "code": "print('hello world')"
+}}
+
+4. create_excel_report
+Creates an .xlsx file. 
+Parameters:
+{{
+    "data": [{{"col1": "val1"}}],
+    "filename": "report.xlsx"
+}}
+
+5. create_word_document
+Creates a .docx file.
+Parameters:
+{{
+    "title": "Document Title",
+    "content": "Paragraph content",
+    "filename": "doc.docx"
+}}
+
+6. create_ppt_presentation
+Creates a .pptx file.
+Parameters:
+{{
+    "slides_data": [{{"title": "Slide 1", "content": "Text"}}],
+    "filename": "pres.pptx"
+}}
+
 RULES:
 
 - Use rag_search for industrial/document/knowledge-base questions.
@@ -139,6 +175,8 @@ RULES:
   1. rag_search
   2. generate_response
 - If intent is "general", use generate_response.
+- Use python_repl when asked to calculate, execute code, or parse complex logic.
+- Use create_* tools when the user asks for a real file (Excel, Word, PPT).
 - Use only the available tools.
 - Maximum {self.MAX_STEPS} steps.
 - Keep descriptions short and user-facing.

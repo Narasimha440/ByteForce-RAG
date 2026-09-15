@@ -700,9 +700,99 @@ USER QUESTION:
                         "step_id": step_id,
                     }
 
+# ==============================================
+                # PYTHON REPL SANDBOX
+                # ==============================================
+                elif tool == "python_repl":
+                    from .sandbox import PythonSandbox
+                    sandbox = PythonSandbox()
+                    code = params.get("code", "")
+                    
+                    yield {
+                        "type": "step",
+                        "message": f"Executing Python Code locally..."
+                    }
+                    
+                    result = sandbox.execute(code)
+                    
+                    steps_log.append(f"Python Execution Result: {result['success']}")
+                    
+                    # Append result to context so the next step (e.g. generate_response) can see it
+                    context += f"\n\n[Sandbox Execution Result]\n{result['output']}\n"
+                    
+                    yield {
+                        "type": "plan_step_complete",
+                        "step_id": step_id,
+                    }
+
+                # ==============================================
+                # EXCEL GENERATION
+                # ==============================================
+                elif tool == "create_excel_report":
+                    from .tools import create_excel_report
+                    data = params.get("data", [])
+                    filename = params.get("filename", "report.xlsx")
+                    
+                    yield {
+                        "type": "step",
+                        "message": f"Generating Excel file: {filename}..."
+                    }
+                    
+                    msg = create_excel_report(data, filename)
+                    context += f"\n\n[Excel Generation]\n{msg}\n"
+                    
+                    yield {
+                        "type": "plan_step_complete",
+                        "step_id": step_id,
+                    }
+
+                # ==============================================
+                # WORD GENERATION
+                # ==============================================
+                elif tool == "create_word_document":
+                    from .tools import create_word_document
+                    title = params.get("title", "Document")
+                    content_str = params.get("content", "")
+                    filename = params.get("filename", "doc.docx")
+                    
+                    yield {
+                        "type": "step",
+                        "message": f"Generating Word file: {filename}..."
+                    }
+                    
+                    msg = create_word_document(title, content_str, filename)
+                    context += f"\n\n[Word Generation]\n{msg}\n"
+                    
+                    yield {
+                        "type": "plan_step_complete",
+                        "step_id": step_id,
+                    }
+
+                # ==============================================
+                # PPT GENERATION
+                # ==============================================
+                elif tool == "create_ppt_presentation":
+                    from .tools import create_ppt_presentation
+                    slides_data = params.get("slides_data", [])
+                    filename = params.get("filename", "presentation.pptx")
+                    
+                    yield {
+                        "type": "step",
+                        "message": f"Generating PowerPoint file: {filename}..."
+                    }
+                    
+                    msg = create_ppt_presentation(slides_data, filename)
+                    context += f"\n\n[PPT Generation]\n{msg}\n"
+                    
+                    yield {
+                        "type": "plan_step_complete",
+                        "step_id": step_id,
+                    }
+
                 # ==============================================
                 # GENERATE RESPONSE
                 # ==============================================
+
 
                 elif tool == "generate_response":
 
@@ -1072,4 +1162,4 @@ USER QUESTION:
             except json.JSONDecodeError:
                 pass
 
-        return None
+        return None\
