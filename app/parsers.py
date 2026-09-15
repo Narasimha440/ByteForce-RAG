@@ -63,12 +63,13 @@ _layout_parser = LayoutLMv3Parser()
 
 def parse_pdf(path: Path) -> List[Dict[str, Any]]:
     """
-    Parse PDF documents page-by-page with adaptive OCR routing.
+    Parse PDF documents page-by-page with adaptive OCR routing and Layout Preservation.
     """
     results: List[Dict[str, Any]] = []
     
     from .ocr_router import route_document_page
     from .ocr import extract_layout_with_ocr, detect_table_structure
+    from .document_metadata import extract_tags, extract_measurements
 
     use_mupdf = False
     try:
@@ -97,9 +98,24 @@ def parse_pdf(path: Path) -> List[Dict[str, Any]]:
                     logger.warning(f"Routing failed for {path.name} page {page_number}: {e}")
                     route_info = {"skip_ocr": False, "dpi": 200, "tier": "light", "page_type": "scanned_light", "has_handwriting": False}
 
+                blocks = []
+                
                 if route_info["skip_ocr"]:
+                    if native_text:
+                        blocks.append({
+                            "block_id": "b0",
+                            "type": "paragraph",
+                            "text": native_text,
+                            "bbox": None,
+                            "entities": {
+                                "equipment": extract_tags(native_text),
+                                "measurements": extract_measurements(native_text)
+                            }
+                        })
+                        
                     results.append({
                         "text": native_text,
+                        "blocks": blocks,
                         "sections": [],
                         "tables": [],
                         "source": str(path),
@@ -117,7 +133,6 @@ def parse_pdf(path: Path) -> List[Dict[str, Any]]:
                 elif getattr(sys.modules.get('app.config'), 'OCR_ENABLED', True):
                     logger.info(f"Page {page_number} ({route_info['page_type']}): OCR at {route_info['dpi']} DPI, Tier: {route_info['tier']}")
                     try:
-                        # Re-render at target DPI
                         rendered_img = render_pdf_page_to_image(path, page_number, dpi=route_info["dpi"])
                         layout = extract_layout_with_ocr(rendered_img, tier=route_info["tier"])
                         
@@ -127,9 +142,49 @@ def parse_pdf(path: Path) -> List[Dict[str, Any]]:
                         table_info = detect_table_structure(layout)
                         tables = [table_info] if table_info["is_table"] else []
                         
-                        if ocr_text.strip():
+                        # Build layout blocks
+                        block_idx = 0
+                        for b in layout.get("blocks", []):
+                            txt = b.get("text", "").strip()
+                            if not txt: continue
+                            
+                            # Heuristic heading detection
+                            b_type = "paragraph"
+                            if len(txt) < 80 and (txt.isupper() or re.match(r"^\d+\.\d+\s+[A-Z]", txt)):
+                                b_type = "heading"
+                                
+                            blocks.append({
+                                "block_id": f"b{block_idx}",
+                                "type": b_type,
+                                "text": txt,
+                                "bbox": b.get("bbox"),
+                                "confidence": b.get("confidence", 1.0),
+                                "entities": {
+                                    "equipment": extract_tags(txt),
+                                    "measurements": extract_measurements(txt)
+                                }
+                            })
+                            block_idx += 1
+                            
+                        # Add tables as blocks
+                        for t_idx, t in enumerate(tables):
+                            blocks.append({
+                                "block_id": f"t{t_idx}",
+                                "type": "table",
+                                "text": t.get("csv_text", ""),
+                                "columns": t.get("headers", []),
+                                "rows": t.get("rows", []),
+                                "bbox": None,
+                                "entities": {
+                                    "equipment": extract_tags(t.get("csv_text", "")),
+                                    "measurements": extract_measurements(t.get("csv_text", ""))
+                                }
+                            })
+                        
+                        if ocr_text.strip() or blocks:
                             results.append({
                                 "text": ocr_text.strip(),
+                                "blocks": blocks,
                                 "sections": [],
                                 "tables": tables,
                                 "source": str(path),
@@ -147,8 +202,19 @@ def parse_pdf(path: Path) -> List[Dict[str, Any]]:
                     except Exception as ocr_err:
                         logger.warning(f"OCR failed for {path.name} page {page_number}: {ocr_err}")
                 elif native_text:
+                    blocks.append({
+                        "block_id": "b0",
+                        "type": "paragraph",
+                        "text": native_text,
+                        "bbox": None,
+                        "entities": {
+                            "equipment": extract_tags(native_text),
+                            "measurements": extract_measurements(native_text)
+                        }
+                    })
                     results.append({
                         "text": native_text,
+                        "blocks": blocks,
                         "sections": [],
                         "tables": [],
                         "source": str(path),
@@ -174,7 +240,7 @@ def parse_pdf(path: Path) -> List[Dict[str, Any]]:
 
 def parse_image(path: Path) -> List[Dict[str, Any]]:
     """
-    Parse image files (.png, .jpg, .jpeg, .webp) using adaptive OCR.
+    Parse image files (.png, .jpg, .jpeg, .webp) using adaptive OCR with layout preservation.
     """
     from .config import OCR_ENABLED
     if not OCR_ENABLED:
@@ -185,6 +251,7 @@ def parse_image(path: Path) -> List[Dict[str, Any]]:
         from PIL import Image
         from .ocr_router import route_document_page
         from .ocr import extract_layout_with_ocr, detect_table_structure
+        from .document_metadata import extract_tags, extract_measurements
 
         pil_img = Image.open(str(path)).convert("RGB")
         route_info = route_document_page(pil_img, filename=path.name)
@@ -198,12 +265,50 @@ def parse_image(path: Path) -> List[Dict[str, Any]]:
         table_info = detect_table_structure(layout)
         tables = [table_info] if table_info["is_table"] else []
 
-        if not ocr_text.strip():
+        blocks = []
+        block_idx = 0
+        for b in layout.get("blocks", []):
+            txt = b.get("text", "").strip()
+            if not txt: continue
+            
+            b_type = "paragraph"
+            if len(txt) < 80 and (txt.isupper() or re.match(r"^\d+\.\d+\s+[A-Z]", txt)):
+                b_type = "heading"
+                
+            blocks.append({
+                "block_id": f"b{block_idx}",
+                "type": b_type,
+                "text": txt,
+                "bbox": b.get("bbox"),
+                "confidence": b.get("confidence", 1.0),
+                "entities": {
+                    "equipment": extract_tags(txt),
+                    "measurements": extract_measurements(txt)
+                }
+            })
+            block_idx += 1
+            
+        for t_idx, t in enumerate(tables):
+            blocks.append({
+                "block_id": f"t{t_idx}",
+                "type": "table",
+                "text": t.get("csv_text", ""),
+                "columns": t.get("headers", []),
+                "rows": t.get("rows", []),
+                "bbox": None,
+                "entities": {
+                    "equipment": extract_tags(t.get("csv_text", "")),
+                    "measurements": extract_measurements(t.get("csv_text", ""))
+                }
+            })
+
+        if not ocr_text.strip() and not blocks:
             return []
 
         file_type = path.suffix.lower().lstrip(".")
         return [{
             "text": ocr_text.strip(),
+            "blocks": blocks,
             "sections": [],
             "tables": tables,
             "source": str(path),

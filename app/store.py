@@ -183,9 +183,13 @@ class VectorStore:
                     "category": chunk.get("category", "general"),
                     "document_type": chunk.get("document_type", "general"),
                     "tags": chunk.get("tags", []),
+                    "measurements": chunk.get("measurements", []),
                     "ocr_used": chunk.get("ocr_used", False),
                     "extraction_method": chunk.get("extraction_method", "native_text"),
                     "ocr_confidence": chunk.get("ocr_confidence", None),
+                    "parent_id": chunk.get("parent_id", ""),
+                    "parent_text": chunk.get("parent_text", ""),
+                    "citation": chunk.get("citation", ""),
                 }
 
                 points.append(

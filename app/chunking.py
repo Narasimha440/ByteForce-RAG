@@ -121,29 +121,19 @@ def split_text_semantically(
 def chunk_documents(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Chunk parsed document records with full metadata and provenance preservation.
-
-    Assigns globally unique and deterministic chunk IDs across the document records.
+    Iterates over structured layout blocks (Parent-Child strategy).
     """
     chunks: List[Dict[str, Any]] = []
     global_chunk_idx = 0
 
     for record_idx, record in enumerate(records):
-        raw_text = record.get("text", "").strip()
-        if not raw_text:
-            continue
-
         source = record.get("source", "Unknown")
         filename = record.get("filename", Path(source).name)
         location = record.get("location", "Unknown")
         page_number = record.get("page_number", 1)
         file_type = record.get("file_type", "unknown")
-        section = record.get("section", None)
-        is_table = record.get("is_table", False)
-
-        # Baseline classification from path
+        
         doc_meta = classify_document(Path(source))
-
-        # Preserve record-specific overrides (especially OCR and scanned flags)
         content_type = record.get("content_type") or doc_meta.get("content_type", "document")
         category = record.get("category") or doc_meta.get("category", "general")
         document_type = record.get("document_type") or doc_meta.get("document_type", "general")
@@ -151,39 +141,55 @@ def chunk_documents(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         extraction_method = record.get("extraction_method", "native_text")
         ocr_used = record.get("ocr_used", False)
         ocr_confidence = record.get("ocr_confidence", None)
+        
+        blocks = record.get("blocks", [])
+        if not blocks:
+            # Fallback for old records without blocks
+            raw_text = record.get("text", "").strip()
+            if not raw_text: continue
+            blocks = [{"block_id": "b0", "type": "paragraph", "text": raw_text}]
 
-        # Parent-Child Hierarchical Context
+        current_heading = None
         parent_id_str = f"p{page_number}_r{record_idx}"
-        parent_text = raw_text if len(raw_text) <= 3000 else raw_text[:3000] + "..."
+        parent_text = record.get("text", "")[:3000]
 
-        # For self-contained table rows, preserve them as single chunks if reasonably sized
-        if is_table and len(raw_text) <= CHUNK_SIZE * 2:
-            text_chunks = [raw_text]
-        else:
-            # Semantically split record text into precise child chunks
-            text_chunks = split_text_semantically(
-                raw_text,
-                chunk_size=CHUNK_SIZE,
-                chunk_overlap=CHUNK_OVERLAP,
-                min_chunk_size=MIN_CHUNK_SIZE,
-            )
+        for block_idx, block in enumerate(blocks):
+            b_type = block.get("type", "paragraph")
+            b_text = block.get("text", "").strip()
+            if not b_text: continue
+            
+            if b_type == "heading":
+                current_heading = b_text
+            
+            # Extract tags specific to this block
+            entities = block.get("entities", {})
+            chunk_equipment = entities.get("equipment", [])
+            chunk_measurements = entities.get("measurements", [])
+            if not chunk_equipment or not chunk_measurements:
+                chunk_equipment = extract_tags(b_text)
+                from .document_metadata import extract_measurements
+                chunk_measurements = extract_measurements(b_text)
 
-        for chunk_offset, chunk_text in enumerate(text_chunks):
-            # Extract technical tags specifically from this chunk
-            chunk_tags = extract_tags(chunk_text)
+            chunk_id_str = f"doc_{Path(source).stem}_p{page_number}_b{block_idx}"
 
-            # Stable, page-prefixed chunk ID for guaranteed provenance and uniqueness
-            chunk_id_str = f"p{page_number}_c{chunk_offset}"
+            # Create the citation string
+            citation = f"[{filename} | Page {page_number}]"
+            
+            # Append context to text for LLM
+            contextual_text = f"Source: {citation}\n"
+            if current_heading and b_type != "heading":
+                contextual_text += f"Section: {current_heading}\n"
+            contextual_text += f"Content:\n{b_text}"
 
             chunk = {
-                "text": chunk_text,
+                "text": contextual_text,
                 "chunk_id": chunk_id_str,
                 "chunk_index": global_chunk_idx,
                 "source": source,
                 "filename": filename,
                 "location": location,
                 "page_number": page_number,
-                "section": section,
+                "section": current_heading,
                 "file_type": file_type,
                 "content_type": content_type,
                 "category": category,
@@ -191,14 +197,17 @@ def chunk_documents(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "revision": revision,
                 "extraction_method": extraction_method,
                 "ocr_used": ocr_used,
-                "ocr_confidence": ocr_confidence,
-                "tags": chunk_tags,
-                "is_table": is_table,
+                "ocr_confidence": block.get("confidence", ocr_confidence),
+                "tags": chunk_equipment,
+                "measurements": chunk_measurements,
+                "is_table": (b_type == "table"),
                 "parent_id": parent_id_str,
                 "parent_text": parent_text,
+                "citation": citation
             }
 
             chunks.append(chunk)
             global_chunk_idx += 1
 
     return chunks
+

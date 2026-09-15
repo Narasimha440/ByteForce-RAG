@@ -179,3 +179,40 @@ def extract_tags(text: str) -> List[str]:
 
 # Backwards compatibility alias
 extract_industrial_tags = extract_tags
+
+def extract_measurements(text: str) -> List[str]:
+    """
+    Extract engineering measurements (value + unit) from text.
+    Matches numbers followed by common industrial units.
+    """
+    if not text:
+        return []
+        
+    measurements = set()
+    
+    # Common industrial units (case-insensitive for some, specific for others)
+    # Using a broad pattern to catch variations
+    units_pattern = r"(?:bar|barg|psig|kpa|mpa|psi|°C|°F|deg C|deg F|mm/s|m/s|rpm|hz|v|kv|ma|a|kw|mw|m3/h|tph|kg/h|lpm)"
+    
+    # Matches integers or decimals followed by optional space and then the unit
+    pattern = rf"\b(\d+(?:\.\d+)?)\s*({units_pattern})\b"
+    
+    matches = re.finditer(pattern, text, re.IGNORECASE)
+    for match in matches:
+        value = match.group(1)
+        # Normalize unit spacing
+        unit = match.group(2).lower()
+        if unit == "deg c": unit = "°C"
+        elif unit == "deg f": unit = "°F"
+        elif unit == "°c": unit = "°C"
+        elif unit == "°f": unit = "°F"
+        elif unit == "kpa": unit = "kPa"
+        elif unit == "mpa": unit = "MPa"
+        elif unit == "mw": unit = "MW"
+        elif unit == "kw": unit = "kW"
+        elif unit == "kv": unit = "kV"
+        elif unit == "hz": unit = "Hz"
+        
+        measurements.add(f"{value} {unit}")
+        
+    return sorted(list(measurements))
