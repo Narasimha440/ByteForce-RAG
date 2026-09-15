@@ -14,7 +14,7 @@ Features:
 
 import logging
 import re
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Generator, List, Optional, Set, Tuple
 
 import requests
 
@@ -495,23 +495,83 @@ Text:
 
         return "\n".join(context_parts), sources
 
+    def _classify_confidence(self, sources: List[Dict[str, Any]]) -> str:
+        """
+        Classify answer confidence as HIGH / MEDIUM / LOW based on
+        the top retrieved chunk's relevance score.
+        """
+        if not sources:
+            return "LOW"
+        top_score = float(sources[0].get("score", 0.0))
+        if top_score >= 0.75:
+            return "HIGH"
+        elif top_score >= 0.50:
+            return "MEDIUM"
+        return "LOW"
+
+    def _build_grounded_prompt(self, question: str, context: str) -> str:
+        """Build a strict evidence-grounded prompt that mandates per-statement citations."""
+        return f"""You are a private industrial knowledge assistant for Mangalore Refinery & Petrochemicals Ltd (MRPL).
+
+Answer the user's question using ONLY the evidence provided from the LOCAL KNOWLEDGE BASE below.
+
+Rules:
+1. NEVER invent facts, measurements, standards, equipment tags, or procedures not present in the evidence.
+2. For EVERY key statement or fact, cite the source using this format at the end of the sentence:
+   [E1: filename | Page X]  or  [E2: filename | Page X]
+   where E1, E2 correspond to the EVIDENCE block numbers below.
+3. If the evidence is insufficient to answer with certainty, respond with exactly:
+   "{INSUFFICIENT_KNOWLEDGE_MESSAGE}"
+4. If a safety or numerical parameter is mentioned, always include its unit (bar, °C, mm, ppm, etc.).
+5. Be concise, accurate, and professional.
+
+USER QUESTION:
+{question}
+
+LOCAL KNOWLEDGE BASE EVIDENCE:
+{context}
+
+Answer (with inline source citations):
+"""
+
     def answer(
         self,
         question: str,
         top_k: int = TOP_K,
         threshold: float = SIMILARITY_THRESHOLD,
         filter_criteria: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[str, List[Dict[str, Any]]]:
+        history: Optional[List[Dict[str, Any]]] = None,
+    ) -> Tuple[str, List[Dict[str, Any]], str]:
         """
         Answer question using local knowledge base and local Ollama LLM.
         - Supports conversational greetings and refinery domain questions smoothly.
         - Employs strict local evidence grounding for operational and safety queries.
         - Dynamically discovers the active Ollama model.
+        - Optional `history` list of prior turns enables multi-turn query condensation.
+
+        Returns:
+            Tuple of (answer_text, sources_list, confidence_level)
+            confidence_level: "HIGH" | "MEDIUM" | "LOW"
         """
+        # Multi-turn query condensation: rewrite follow-up questions
+        resolved_question = question
+        if history:
+            try:
+                from .memory import condense_followup_query, is_followup_question
+                if is_followup_question(question, history):
+                    from .config import OLLAMA_URL
+                    resolved_question = condense_followup_query(
+                        history, question, ollama_url=OLLAMA_URL
+                    )
+                    logger.info(
+                        f"[Memory] Query condensed: '{question}' → '{resolved_question}'"
+                    )
+            except Exception as mem_exc:
+                logger.debug(f"Memory condensation skipped: {mem_exc}")
         active_model = get_active_ollama_model()
 
         # 1. Check for Conversational / Greeting Query
-        if is_conversational_query(question):
+        if is_conversational_query(resolved_question):
             system_prompt = (
                 "You are the Sovereign Industrial AI Assistant for Mangalore Refinery and Petrochemicals Limited (MRPL). "
                 "You assist plant engineers, operators, and safety auditors with refinery P&IDs, SOPs, equipment tags "
@@ -535,7 +595,7 @@ Text:
                 )
                 response.raise_for_status()
                 data = response.json()
-                return data["message"]["content"], []
+                return data["message"]["content"], [], "HIGH"
             except Exception:
                 fallback_msg = (
                     "Hello! I am your Sovereign Industrial AI Assistant for Mangalore Refinery & Petrochemicals Ltd (MRPL).\n\n"
@@ -546,40 +606,22 @@ Text:
                     "• **Technical OCR Document Processing** (Scanned records, drawings, inspection tags)\n\n"
                     "How can I assist your refinery operations or safety verification today?"
                 )
-                return fallback_msg, []
+                return fallback_msg, [], "HIGH"
 
         # 2. Operational / Evidence Retrieval
         hits = self.retrieve(
-            question,
+            resolved_question,
             top_k=top_k,
             threshold=threshold,
             filter_criteria=filter_criteria,
         )
 
         if not hits:
-            return INSUFFICIENT_KNOWLEDGE_MESSAGE, []
+            return INSUFFICIENT_KNOWLEDGE_MESSAGE, [], "LOW"
 
-        context, sources = self.build_context(hits, question=question)
-
-        prompt = f"""You are a private industrial knowledge assistant for sovereign confidential industrial facilities.
-
-Answer the user's question using ONLY the evidence provided from the LOCAL KNOWLEDGE BASE below.
-
-Rules:
-1. Do not invent requirements, standards, procedures, measurements, equipment specifications, safety rules, or engineering values.
-2. If the evidence is insufficient to answer the question with certainty, respond exactly with:
-   "{INSUFFICIENT_KNOWLEDGE_MESSAGE}"
-3. Prefer information directly supported by the evidence.
-4. Mention the relevant source document and page number for each key statement.
-
-USER QUESTION:
-{question}
-
-LOCAL KNOWLEDGE BASE EVIDENCE:
-{context}
-
-Answer concisely, accurately, and professionally:
-"""
+        context, sources = self.build_context(hits, question=resolved_question)
+        confidence = self._classify_confidence(sources)
+        prompt = self._build_grounded_prompt(resolved_question, context)
 
         try:
             response = requests.post(
@@ -601,7 +643,15 @@ Answer concisely, accurately, and professionally:
             response.raise_for_status()
             data = response.json()
             answer_text = data["message"]["content"]
-            return answer_text, sources
+
+            # Append confidence advisory for LOW-confidence answers
+            if confidence == "LOW":
+                answer_text += (
+                    "\n\n⚠ LOW CONFIDENCE: Retrieved evidence has low relevance scores. "
+                    "Cross-check with shift supervisor or source documents before field action."
+                )
+
+            return answer_text, sources, confidence
 
         except Exception as err:
             logger.warning(f"Ollama call failed ({err}). Generating structured executive summary from evidence.")
@@ -625,7 +675,92 @@ Answer concisely, accurately, and professionally:
                 if other_docs:
                     exec_summary.append(f"\n**Additional Corroborating Documents**: {', '.join(other_docs)}")
 
-            return "\n".join(exec_summary), sources
+            return "\n".join(exec_summary), sources, confidence
+
+    def answer_stream(
+        self,
+        question: str,
+        top_k: int = TOP_K,
+        threshold: float = SIMILARITY_THRESHOLD,
+        filter_criteria: Optional[Dict[str, Any]] = None,
+        history: Optional[List[Dict[str, Any]]] = None,
+    ) -> Generator[str, None, None]:
+        """
+        Streaming answer generator — yields tokens as they are produced by Ollama.
+        Each yielded value is a string token chunk (may be a word or partial word).
+
+        Usage:
+            for token in rag.answer_stream(question):
+                print(token, end="", flush=True)
+
+        Falls back to non-streaming answer() if streaming is unavailable.
+        """
+        import json as _json
+
+        active_model = get_active_ollama_model()
+
+        # Conversational queries — no streaming needed, answer directly
+        if is_conversational_query(question):
+            answer, _, _ = self.answer(question)
+            yield answer
+            return
+
+        # Multi-turn condensation
+        resolved_question = question
+        if history:
+            try:
+                from .memory import condense_followup_query, is_followup_question
+                if is_followup_question(question, history):
+                    resolved_question = condense_followup_query(history, question)
+            except Exception:
+                pass
+
+        hits = self.retrieve(resolved_question, top_k=top_k, threshold=threshold,
+                             filter_criteria=filter_criteria)
+        if not hits:
+            yield INSUFFICIENT_KNOWLEDGE_MESSAGE
+            return
+
+        context, sources = self.build_context(hits, question=resolved_question)
+        prompt = self._build_grounded_prompt(resolved_question, context)
+
+        try:
+            with requests.post(
+                OLLAMA_URL,
+                json={
+                    "model": active_model,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": "Answer only from the provided local evidence. Never hallucinate. Always cite source and page.",
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    "stream": True,
+                    "options": {"temperature": 0.1},
+                },
+                timeout=300,
+                stream=True,
+            ) as resp:
+                resp.raise_for_status()
+                for line in resp.iter_lines():
+                    if not line:
+                        continue
+                    try:
+                        chunk_data = _json.loads(line.decode("utf-8") if isinstance(line, bytes) else line)
+                        token = chunk_data.get("message", {}).get("content", "")
+                        if token:
+                            yield token
+                        if chunk_data.get("done"):
+                            break
+                    except _json.JSONDecodeError:
+                        continue
+        except Exception as exc:
+            logger.warning(f"Streaming failed ({exc}). Falling back to blocking answer.")
+            # Graceful non-streaming fallback
+            answer, _, _ = self.answer(question, top_k=top_k, threshold=threshold,
+                                       filter_criteria=filter_criteria, history=history)
+            yield answer
 
     def search(self, question: str, top_k: int = TOP_K, threshold: float = SIMILARITY_THRESHOLD) -> dict:
         """

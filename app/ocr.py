@@ -464,6 +464,148 @@ def sanitize_industrial_tags(text: str) -> str:
     return cleaned
 
 
+def detect_table_structure(
+    ocr_layout: Dict[str, Any],
+    min_columns: int = 2,
+    min_rows: int = 2,
+) -> Dict[str, Any]:
+    """
+    Analyse an OCR layout result (from extract_layout_with_ocr) and detect
+    whether the page contains a structured table with multiple columns.
+
+    Returns a dict:
+        {
+            "is_table": bool,
+            "rows": [[cell_text, ...], ...],  # list of rows, each a list of cell texts
+            "csv_text": str,                  # pipe-separated reconstruction for chunking
+            "num_rows": int,
+            "num_cols": int,
+        }
+
+    If no table is detected, returns {"is_table": False, ...} with empty rows.
+    """
+    blocks = ocr_layout.get("blocks", [])
+    if not blocks:
+        return {"is_table": False, "rows": [], "csv_text": "", "num_rows": 0, "num_cols": 0}
+
+    # Group blocks into horizontal rows by their vertical centre (cy)
+    sorted_blocks = sorted(blocks, key=lambda b: (b["bbox"][1] + b["bbox"][3]) / 2)
+
+    rows_raw: List[List[Dict]] = []
+    current_row: List[Dict] = []
+
+    # Compute median block height for adaptive y-tolerance
+    heights = [(b["bbox"][3] - b["bbox"][1]) for b in sorted_blocks if len(b["bbox"]) >= 4]
+    median_h = sorted(heights)[len(heights) // 2] if heights else 20.0
+    y_tol = max(median_h * 0.5, 8.0)
+
+    last_cy = None
+    for block in sorted_blocks:
+        cy = (block["bbox"][1] + block["bbox"][3]) / 2.0
+        if last_cy is None or abs(cy - last_cy) <= y_tol:
+            current_row.append(block)
+            last_cy = cy if last_cy is None else (last_cy + cy) / 2.0
+        else:
+            rows_raw.append(current_row)
+            current_row = [block]
+            last_cy = cy
+    if current_row:
+        rows_raw.append(current_row)
+
+    # Filter: need at least min_rows with at least min_columns in the majority of rows
+    multi_col_rows = [r for r in rows_raw if len(r) >= min_columns]
+    is_table = (
+        len(rows_raw) >= min_rows and len(multi_col_rows) >= min_rows
+    )
+
+    if not is_table:
+        return {"is_table": False, "rows": [], "csv_text": "", "num_rows": 0, "num_cols": 0}
+
+    # Reconstruct table rows as lists of cell text (sorted left-to-right)
+    table_rows: List[List[str]] = []
+    for row in rows_raw:
+        row_sorted = sorted(row, key=lambda b: b["bbox"][0])  # sort by x1 (left edge)
+        table_rows.append([sanitize_industrial_tags(b["text"]) for b in row_sorted])
+
+    num_cols = max(len(r) for r in table_rows) if table_rows else 0
+
+    # Build a pipe-separated text representation for downstream chunking
+    csv_lines: List[str] = []
+    for row in table_rows:
+        csv_lines.append(" | ".join(cell.strip() for cell in row))
+    csv_text = "\n".join(csv_lines)
+
+    return {
+        "is_table": True,
+        "rows": table_rows,
+        "csv_text": csv_text,
+        "num_rows": len(table_rows),
+        "num_cols": num_cols,
+    }
+
+
+def get_page_ocr_quality_report(
+    pdf_path: Path,
+    max_pages: int = 5,
+    dpi: int = OCR_DPI,
+) -> List[Dict[str, Any]]:
+    """
+    Run OCR on the first `max_pages` pages of a PDF and return a per-page
+    quality report. Useful during ingestion to flag low-confidence pages
+    that may need manual review.
+
+    Returns:
+        List of dicts per page:
+        {
+            "page_number": int,
+            "avg_confidence": float,
+            "line_count": int,
+            "is_low_quality": bool,  # True if avg_confidence < OCR_CONFIDENCE_THRESHOLD
+            "is_table_page": bool,   # True if table structure detected
+        }
+    """
+    report: List[Dict[str, Any]] = []
+    pdf_path = Path(pdf_path)
+
+    if not pdf_path.exists():
+        logger.warning(f"OCR quality report: file not found {pdf_path}")
+        return report
+
+    try:
+        import pymupdf
+        doc = pymupdf.open(str(pdf_path))
+        total_pages = min(len(doc), max_pages)
+        doc.close()
+    except Exception:
+        total_pages = max_pages  # best-effort
+
+    for page_num in range(1, total_pages + 1):
+        try:
+            img = render_pdf_page_to_image(pdf_path, page_num, dpi=dpi)
+            layout = extract_layout_with_ocr(img, sanitize_tags=True, preprocess=True)
+            table_info = detect_table_structure(layout)
+            avg_conf = layout.get("average_confidence", 0.0)
+            report.append({
+                "page_number": page_num,
+                "avg_confidence": round(avg_conf, 4),
+                "line_count": layout.get("line_count", 0),
+                "is_low_quality": avg_conf < OCR_CONFIDENCE_THRESHOLD,
+                "is_table_page": table_info["is_table"],
+            })
+        except Exception as exc:
+            report.append({
+                "page_number": page_num,
+                "avg_confidence": 0.0,
+                "line_count": 0,
+                "is_low_quality": True,
+                "is_table_page": False,
+                "error": str(exc),
+            })
+            logger.warning(f"OCR quality check failed on page {page_num}: {exc}")
+
+    return report
+
+
 def extract_text_with_ocr(
     image_or_path: Union[Image.Image, Path, str],
     sanitize_tags: bool = True,

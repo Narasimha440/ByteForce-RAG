@@ -30,28 +30,36 @@ def print_help():
     print_banner()
     print("""Available CLI Commands:
 
-1. RAG Query (Retrieval & Grounded Context):
+1. RAG Query (Retrieval & Grounded Context, with streaming):
    python cli.py rag "What is the trip limit for PT-101?"
    python cli.py rag "What were the safety audit findings for XV-301?"
 
-2. OCR Engine (Local Extraction & Tag Sanitizer):
+2. RAG Multi-Turn Chat (Conversational memory + query rewriting):
+   python cli.py rag --chat
+
+3. RAG Accuracy Benchmark (Hit Rate, MRR, Precision@K):
+   python cli.py rag --eval
+
+4. OCR Engine (Local Extraction & Tag Sanitizer):
    python cli.py ocr
    python cli.py ocr path/to/drawing_or_scanned_page.png
 
-3. Ingestion & Document Synchronization:
+5. Ingestion & Document Synchronization:
    python cli.py ingest              # Sync all files in data/
    python cli.py ingest <file_path>  # Ingest a single document
 
-4. Health Check & Diagnostics:
+6. Health Check & Diagnostics:
    python cli.py check               # Check Qdrant, Ollama, RapidOCR, BGE-M3
 
-5. Test Suite:
+7. Test Suite:
    python cli.py test                # Run unit and integration tests
 
 Alternative Direct Commands:
    python ocr                        # Run OCR self-test
    python ocr <image_path>           # Run OCR on file
-   python rag "<question>"           # Run RAG query directly
+   python rag "<question>"           # Run RAG query directly (streaming)
+   python -m rag --chat              # Multi-turn chat mode
+   python -m rag --eval              # Run accuracy benchmark
    python -m app.ingest              # Ingest knowledge base
 ======================================================================
 """)

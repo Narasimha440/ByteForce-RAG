@@ -2,10 +2,13 @@
 Interactive & CLI Entry Point for the Sovereign RAG Engine (Harsha).
 
 Usage:
-  python -m rag                     # Interactive Q&A Mode in terminal
-  python -m rag "<question>"        # Single-query execution
-  python rag                        # Interactive Q&A Mode
-  python cli.py rag                 # Interactive Q&A Mode
+  python -m rag                     # Interactive streaming Q&A Mode
+  python -m rag "<question>"        # Single-query streaming execution
+  python -m rag --chat              # Multi-turn conversational mode with memory
+  python -m rag --eval              # Run accuracy benchmark (Hit Rate, MRR, P@K)
+  python cli.py rag "<question>"    # Via unified CLI
+  python cli.py rag --chat          # Via CLI, multi-turn chat with memory
+  python cli.py rag --eval          # Via CLI, accuracy benchmark
 """
 
 from pathlib import Path
@@ -19,65 +22,81 @@ if str(REPO_ROOT) not in sys.path:
 from app.rag import LocalRAG, is_conversational_query
 
 
-def handle_query(rag: LocalRAG, query: str):
+def handle_query_streaming(rag: LocalRAG, query: str, history=None):
+    """
+    Run a single query with live streaming output.
+    Prints tokens as they arrive from Ollama instead of waiting for full response.
+    """
     print("\n--------------------------------------------------")
     print(f"USER: {query}")
     print("--------------------------------------------------")
+    print("\n[MRPL ASSISTANT]\n", end="", flush=True)
 
-    # 1. Conversational Query (Greetings, identity, normal chat)
-    if is_conversational_query(query):
-        answer, _ = rag.answer(query)
-        print(f"\n[MRPL ASSISTANT]\n{answer}\n")
-        print("--------------------------------------------------\n")
-        return
+    full_answer = ""
+    sources = []
 
-    # 2. Industrial Grounded Retrieval & Answering
-    answer, sources = rag.answer(query, top_k=3)
+    # Use streaming generator
+    try:
+        for token in rag.answer_stream(query, top_k=3, history=history):
+            print(token, end="", flush=True)
+            full_answer += token
+    except Exception as e:
+        # Fallback to blocking answer if stream fails
+        ans, sources, confidence = rag.answer(query, top_k=3, history=history)
+        print(ans)
+        full_answer = ans
+        _print_sources(sources, confidence)
+        return full_answer, sources
 
-    print(f"\n[MRPL ASSISTANT]\n{answer}\n")
+    print("\n")
 
+    # After streaming is done, retrieve sources for citation display
+    # (sources come from the blocking path; for streaming we re-use retrieve)
+    try:
+        hits = rag.retrieve(query, top_k=3)
+        if hits:
+            _, sources = rag.build_context(hits, question=query)
+            confidence = rag._classify_confidence(sources)
+            _print_sources(sources, confidence)
+    except Exception:
+        pass
+
+    print("--------------------------------------------------\n")
+    return full_answer, sources
+
+
+def _print_sources(sources: list, confidence: str = ""):
+    """Print verified source citations to terminal."""
     if sources:
-        print("[VERIFIED SOURCES & CITATIONS]")
+        conf_badge = f"  [{confidence} CONFIDENCE]" if confidence else ""
+        print(f"[VERIFIED SOURCES & CITATIONS]{conf_badge}")
         for i, s in enumerate(sources, 1):
             ocr_flag = " (OCR Extracted)" if s.get("ocr_used") else ""
-            print(f"  [{i}] {s.get('filename')} (Page {s.get('page_number', 'N/A')}) — Relevance: {s.get('score', 0.0):.4f}{ocr_flag}")
-
-        # Check visual handoffs for CAD / scanned documents
+            score = s.get("score", 0.0)
+            print(
+                f"  [{i}] {s.get('filename')} "
+                f"(Page {s.get('page_number', 'N/A')}) — "
+                f"Relevance: {score:.4f}{ocr_flag}"
+            )
+        # CAD/Vision handoff note
         visuals = [s for s in sources if s.get("visual_handoff")]
         if visuals:
-            print(f"\n[+] CAD/Vision Handoff: {len(visuals)} engineering drawing(s) available for Qwen2.5-VL")
-
+            print(f"\n[+] CAD/Vision Handoff: {len(visuals)} drawing(s) ready for Qwen2.5-VL")
     print("--------------------------------------------------\n")
 
 
-def main():
-    print("==================================================================")
-    print("      SOVEREIGN INDUSTRIAL RAG ENGINE - TERMINAL INTERFACE        ")
-    print("          Mangalore Refinery & Petrochemicals Ltd (MRPL)          ")
-    print("==================================================================")
-    print("[*] Initializing LocalRAG (Loading BGE-M3 Embeddings & Qdrant)...")
+def run_chat_mode(rag: LocalRAG):
+    """
+    Multi-turn conversational mode with ConversationMemory.
+    Automatically rewrites vague follow-up questions into self-contained queries.
+    """
+    from app.memory import ConversationMemory
 
-    try:
-        rag = LocalRAG()
-        print("[+] RAG Engine Ready!\n")
-    except Exception as e:
-        print(f"[-] Initialization Error: {e}")
-        sys.exit(1)
+    memory = ConversationMemory(max_turns=6)
 
-    # If question passed via CLI arguments, run single query
-    if len(sys.argv) > 1:
-        query = " ".join(sys.argv[1:]).strip()
-        handle_query(rag, query)
-        return
-
-    # Otherwise enter Interactive Q&A Mode
-    print("Type your industrial questions below.")
-    print("Examples:")
-    print("  - What is the trip limit for PT-101?")
-    print("  - What were the safety audit findings for XV-301?")
-    print("  - What is the installed capacity of MRPL Phase III?")
-    print("  - What are the major findings in the inspection report?")
-    print("(Type 'exit', 'quit', or 'q' to exit)\n")
+    print("\n[CHAT MODE] Multi-turn conversation with memory enabled.")
+    print("Follow-up questions like 'what about FT-204?' will be automatically resolved.")
+    print("Type 'clear' to reset memory. Type 'exit' or 'q' to quit.\n")
 
     while True:
         try:
@@ -85,14 +104,91 @@ def main():
             if not query:
                 continue
             if query.lower() in ("exit", "quit", "q"):
-                print("Exiting RAG interface. Goodbye!")
+                print("Exiting chat. Goodbye!")
                 break
+            if query.lower() == "clear":
+                memory.clear()
+                print("[Memory cleared]\n")
+                continue
 
-            handle_query(rag, query)
+            history = memory.get_context_window()
+            full_answer, sources = handle_query_streaming(rag, query, history=history)
+
+            # Record turn in memory
+            memory.add_turn(query, full_answer, sources)
 
         except (KeyboardInterrupt, EOFError):
-            print("\nExiting RAG interface. Goodbye!")
+            print("\nExiting chat. Goodbye!")
             break
+
+
+def run_eval_mode():
+    """Run the RAG accuracy benchmark and print results to terminal."""
+    print("\n[EVAL MODE] Running RAG accuracy benchmark...")
+    print("This evaluates retrieval quality using Hit Rate, MRR, and Precision@K.\n")
+    try:
+        from app.eval import RAGEvaluator
+        evaluator = RAGEvaluator(top_k=5)
+        evaluator.run_eval(verbose=True)
+    except Exception as e:
+        print(f"[-] Evaluation failed: {e}")
+        print("    Tip: Make sure data is ingested first: python cli.py ingest")
+
+
+def main():
+    print("==================================================================")
+    print("      SOVEREIGN INDUSTRIAL RAG ENGINE - TERMINAL INTERFACE        ")
+    print("          Mangalore Refinery & Petrochemicals Ltd (MRPL)          ")
+    print("==================================================================")
+
+    args = sys.argv[1:]
+
+    # ── Eval mode ─────────────────────────────────────────────────────────
+    if "--eval" in args:
+        run_eval_mode()
+        return
+
+    # ── Initialize RAG ────────────────────────────────────────────────────
+    print("[*] Initializing LocalRAG (Loading BGE-M3 Embeddings & Qdrant)...")
+    try:
+        rag = LocalRAG()
+        print("[+] RAG Engine Ready! (Streaming mode enabled)\n")
+    except Exception as e:
+        print(f"[-] Initialization Error: {e}")
+        sys.exit(1)
+
+    # ── Chat mode (multi-turn with memory) ────────────────────────────────
+    if "--chat" in args or (len(args) == 0):
+        if "--chat" in args:
+            run_chat_mode(rag)
+            return
+
+        # No arguments → standard interactive mode (streaming, no memory)
+        print("Type your industrial questions below.")
+        print("Examples:")
+        print("  - What is the trip limit for PT-101?")
+        print("  - What were the safety audit findings for XV-301?")
+        print("  - What is the installed capacity of MRPL Phase III?")
+        print("(Type 'exit', 'quit', or 'q' to quit | '--chat' for multi-turn mode)\n")
+
+        while True:
+            try:
+                query = input("Ask RAG > ").strip()
+                if not query:
+                    continue
+                if query.lower() in ("exit", "quit", "q"):
+                    print("Exiting RAG interface. Goodbye!")
+                    break
+                handle_query_streaming(rag, query)
+            except (KeyboardInterrupt, EOFError):
+                print("\nExiting RAG interface. Goodbye!")
+                break
+        return
+
+    # ── Single query via CLI args ─────────────────────────────────────────
+    query = " ".join(a for a in args if not a.startswith("--")).strip()
+    if query:
+        handle_query_streaming(rag, query)
 
 
 if __name__ == "__main__":
