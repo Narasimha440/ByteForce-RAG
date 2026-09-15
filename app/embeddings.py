@@ -50,6 +50,7 @@ class LocalEmbeddingProvider(BaseEmbeddingProvider):
         self.model_name = model_name
         self._model = None
         self._dimension = None
+        self._query_cache: dict = {}  # LRU-style query embedding cache (max 128 entries)
 
     def _get_model(self):
         if self._model is None:
@@ -80,9 +81,24 @@ class LocalEmbeddingProvider(BaseEmbeddingProvider):
         return embeddings.tolist()
 
     def embed_query(self, query: str) -> List[float]:
+        """
+        Embed a single search query. Results are cached for the last 128 unique queries
+        to avoid re-embedding on repeated or near-identical CLI invocations.
+        """
+        cached = self._query_cache.get(query)
+        if cached is not None:
+            logger.debug(f"Embedding cache hit for query: '{query[:50]}'")
+            return cached
+
         model = self._get_model()
-        embedding = model.encode(query, normalize_embeddings=True)
-        return embedding.tolist()
+        embedding = model.encode(query, normalize_embeddings=True).tolist()
+
+        # Evict oldest entry if cache full
+        if len(self._query_cache) >= 128:
+            oldest_key = next(iter(self._query_cache))
+            del self._query_cache[oldest_key]
+        self._query_cache[query] = embedding
+        return embedding
 
 
 class APIEmbeddingProvider(BaseEmbeddingProvider):

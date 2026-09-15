@@ -19,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from app.rag import LocalRAG, is_conversational_query
+from app.rag import LocalRAG, is_conversational_query, get_rag_instance
 
 
 def handle_query_streaming(rag: LocalRAG, query: str, history=None):
@@ -151,7 +151,7 @@ def main():
     # ── Initialize RAG ────────────────────────────────────────────────────
     print("[*] Initializing LocalRAG (Loading BGE-M3 Embeddings & Qdrant)...")
     try:
-        rag = LocalRAG()
+        rag = get_rag_instance()  # Singleton — warm on first call, instant on repeat
         print("[+] RAG Engine Ready! (Streaming mode enabled)\n")
     except Exception as e:
         print(f"[-] Initialization Error: {e}")

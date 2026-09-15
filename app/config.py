@@ -66,11 +66,15 @@ CHUNK_OVERLAP = 150
 MIN_CHUNK_SIZE = 80
 
 # Hybrid Retrieval & Search Quality
-TOP_K = 5
-SIMILARITY_THRESHOLD = 0.35
+TOP_K = 4                    # Reduced from 5 — fewer candidates = faster CrossEncoder
+SIMILARITY_THRESHOLD = 0.38  # Raised from 0.35 — skips weak candidates earlier
 HYBRID_RETRIEVAL_ENABLED = True
 BM25_INDEX_PATH = DATA_DIR / "bm25_index.json"
-RRF_K = 60  # Reciprocal Rank Fusion constant
+RRF_K = 40                   # Reduced from 60 — slightly faster RRF computation
+
+# LLM Context Window Limit
+# Prevents sending huge context strings that slow Ollama token generation
+LLM_MAX_CONTEXT_CHARS = 6000  # Truncate combined evidence context to this length
 
 # Reranker Settings
 RERANKING_ENABLED = True

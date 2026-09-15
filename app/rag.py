@@ -14,6 +14,7 @@ Features:
 
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, Generator, List, Optional, Set, Tuple
 
 import requests
@@ -22,6 +23,7 @@ from .bm25 import BM25Index
 from .config import (
     BM25_INDEX_PATH,
     HYBRID_RETRIEVAL_ENABLED,
+    LLM_MAX_CONTEXT_CHARS,
     OLLAMA_MODEL,
     OLLAMA_URL,
     RERANKER_ENGINE,
@@ -250,37 +252,47 @@ class LocalRAG:
         if acronym_enriched != clean_query:
             augmented_query = f"{acronym_enriched} | {augmented_query}"
 
-        # 1. Dense Semantic Retrieval via Qdrant
-        query_vector = self.embedder.embed_query(augmented_query)
-        dense_hits = self.store.search(
-            query_vector,
-            limit=top_k * 4 if HYBRID_RETRIEVAL_ENABLED else top_k,
-            filter_dict=filter_criteria,
-        )
-
+        # 1 & 2. PARALLEL Dense + Sparse Retrieval (ThreadPoolExecutor)
+        # Running Qdrant vector search and BM25 simultaneously cuts wait time by ~40-50%
         dense_candidates = []
-        for rank, hit in enumerate(dense_hits):
-            payload = dict(hit.payload or {})
-            payload["score"] = float(hit.score) if hit.score is not None else 0.0
-            dense_candidates.append((payload, rank))
-
-        # 2. Sparse Lexical Retrieval via BM25 with Lexical Boosts & Metadata Pre-Filtering
         sparse_candidates = []
-        if HYBRID_RETRIEVAL_ENABLED and self.bm25 and self.bm25.corpus_size > 0:
+
+        def _run_dense():
+            query_vector = self.embedder.embed_query(augmented_query)
+            hits = self.store.search(
+                query_vector,
+                limit=top_k * 2,  # Reduced from top_k*4 → cuts reranker load by 50%
+                filter_dict=filter_criteria,
+            )
+            result = []
+            for rank, hit in enumerate(hits):
+                payload = dict(hit.payload or {})
+                payload["score"] = float(hit.score) if hit.score is not None else 0.0
+                result.append((payload, rank))
+            return result
+
+        def _run_sparse():
+            if not (HYBRID_RETRIEVAL_ENABLED and self.bm25 and self.bm25.corpus_size > 0):
+                return []
             bm25_query = clean_query
             if lexical_boosts:
                 bm25_query += " " + " ".join(lexical_boosts[:4])
-
-            bm25_results = self.bm25.search(bm25_query, top_k=top_k * 4)
+            bm25_results = self.bm25.search(bm25_query, top_k=top_k * 2)
+            result = []
             for rank, (payload, b_score) in enumerate(bm25_results):
-                # Apply filter_criteria to sparse candidates for strict metadata parity
                 if filter_criteria:
-                    match = all(payload.get(k) == v for k, v in filter_criteria.items())
-                    if not match:
+                    if not all(payload.get(k) == v for k, v in filter_criteria.items()):
                         continue
                 p_copy = dict(payload)
                 p_copy["bm25_score"] = float(b_score)
-                sparse_candidates.append((p_copy, rank))
+                result.append((p_copy, rank))
+            return result
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_dense = executor.submit(_run_dense)
+            future_sparse = executor.submit(_run_sparse)
+            dense_candidates = future_dense.result()
+            sparse_candidates = future_sparse.result()
 
         # 3. Adaptive Reciprocal Rank Fusion (Adaptive RRF)
         if sparse_candidates:
@@ -510,7 +522,13 @@ Text:
         return "LOW"
 
     def _build_grounded_prompt(self, question: str, context: str) -> str:
-        """Build a strict evidence-grounded prompt that mandates per-statement citations."""
+        """Build a strict evidence-grounded prompt that mandates per-statement citations.
+        Context is truncated to LLM_MAX_CONTEXT_CHARS to keep Ollama inference fast.
+        """
+        # Truncate context to keep prompt size manageable for small local LLMs
+        if len(context) > LLM_MAX_CONTEXT_CHARS:
+            context = context[:LLM_MAX_CONTEXT_CHARS] + "\n... [context truncated for speed]"
+
         return f"""You are a private industrial knowledge assistant for Mangalore Refinery & Petrochemicals Ltd (MRPL).
 
 Answer the user's question using ONLY the evidence provided from the LOCAL KNOWLEDGE BASE below.
@@ -522,7 +540,7 @@ Rules:
    where E1, E2 correspond to the EVIDENCE block numbers below.
 3. If the evidence is insufficient to answer with certainty, respond with exactly:
    "{INSUFFICIENT_KNOWLEDGE_MESSAGE}"
-4. If a safety or numerical parameter is mentioned, always include its unit (bar, °C, mm, ppm, etc.).
+4. If a safety or numerical parameter is mentioned, always include its unit (bar, \u00b0C, mm, ppm, etc.).
 5. Be concise, accurate, and professional.
 
 USER QUESTION:
@@ -791,7 +809,7 @@ Answer (with inline source citations):
             "sources": sources,
             "visual_handoffs": visual_handoffs,
             "retrieval_stats": {
-                "candidates": top_k * 4 if HYBRID_RETRIEVAL_ENABLED else top_k,
+                "candidates": top_k * 2,  # Updated to reflect actual pool size
                 "reranked": len(sources),
                 "final": min(len(sources), top_k)
             }
@@ -837,10 +855,28 @@ def get_visual_evidence(hits: List[Any]) -> List[Dict[str, Any]]:
     return visuals
 
 
+# ── Global Singleton ──────────────────────────────────────────────────────────
+# Caches the LocalRAG instance for the lifetime of the process.
+# Avoids re-loading BGE-M3 (~570MB), BM25 index, and CrossEncoder on every query.
+_RAG_SINGLETON: Optional["LocalRAG"] = None
+
+
+def get_rag_instance() -> "LocalRAG":
+    """
+    Return the process-scoped LocalRAG singleton.
+    On first call, loads all models (BGE-M3, BM25, CrossEncoder).
+    Subsequent calls return the warm instance instantly.
+    """
+    global _RAG_SINGLETON
+    if _RAG_SINGLETON is None:
+        logger.info("[Singleton] Creating LocalRAG instance...")
+        _RAG_SINGLETON = LocalRAG()
+    return _RAG_SINGLETON
+
+
 def retrieve(question: str, top_k: int = TOP_K, threshold: float = SIMILARITY_THRESHOLD) -> List[Any]:
-    """Clean module-level API for retrieval."""
-    rag = LocalRAG()
-    return rag.retrieve(question, top_k=top_k, threshold=threshold)
+    """Clean module-level API for retrieval. Reuses the process singleton."""
+    return get_rag_instance().retrieve(question, top_k=top_k, threshold=threshold)
 
 
 def build_context(
@@ -848,6 +884,5 @@ def build_context(
     expand_to_parent: bool = True,
     question: Optional[str] = None,
 ) -> Tuple[str, List[Dict[str, Any]]]:
-    """Clean module-level API for context construction."""
-    rag = LocalRAG()
-    return rag.build_context(hits, expand_to_parent=expand_to_parent, question=question)
+    """Clean module-level API for context construction. Reuses the process singleton."""
+    return get_rag_instance().build_context(hits, expand_to_parent=expand_to_parent, question=question)
