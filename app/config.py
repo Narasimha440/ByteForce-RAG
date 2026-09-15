@@ -77,7 +77,7 @@ RRF_K = 40                   # Reduced from 60 — slightly faster RRF computati
 LLM_MAX_CONTEXT_CHARS = 6000  # Truncate combined evidence context to this length
 
 # Reranker Settings
-RERANKING_ENABLED = True
+RERANKING_ENABLED = False  # Disabled to massively speed up search latency on CPU
 RERANKER_ENGINE = "cross_encoder"  # P1 FIX: Mandated Cross-Encoder for deep attention
 RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
 
