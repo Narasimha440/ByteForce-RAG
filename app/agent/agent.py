@@ -1,214 +1,425 @@
 import json
 import requests
 
+from typing import (
+    Generator,
+    Dict,
+    Any,
+    List,
+)
+
 from app.rag import LocalRAG
-from app.config import OLLAMA_URL, OLLAMA_MODEL, get_active_ollama_model
+from app.config import (
+    OLLAMA_URL,
+    OLLAMA_MODEL,
+)
+
+from app.agent.planner import Planner
+from app.agent.verifier import EvidenceVerifier
 
 
 class Agent:
 
+    # Maximum number of dynamic replanning attempts.
+    MAX_REPLANS = 2
+
     def __init__(self):
+
         self.rag = LocalRAG()
 
-    def call_llm(self, prompt, temperature=0.1):
-        model = get_active_ollama_model()
-        response = requests.post(
-            OLLAMA_URL,
-            json={
-                "model": model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are the reasoning agent for a "
-                            "private, on-premise industrial AI workbench."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                "stream": False,
-                "options": {"temperature": temperature},
-            },
-            timeout=300,
-        )
-        response.raise_for_status()
-        return response.json()["message"]["content"]
+        # Reusable HTTP connection pool.
+        self.session = requests.Session()
 
-    def call_llm_stream(self, prompt, temperature=0.1):
-        model = get_active_ollama_model()
-        response = requests.post(
-            OLLAMA_URL,
-            json={
-                "model": model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are the reasoning agent for a "
-                            "private, on-premise industrial AI workbench."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                "stream": True,
-                "options": {"temperature": temperature},
-            },
-            stream=True,
-            timeout=300,
+        self.planner = Planner(
+            self.call_llm
         )
 
-        response.raise_for_status()
+        self.verifier = EvidenceVerifier(
+            self.call_llm
+        )
 
-        for line in response.iter_lines():
-            if not line:
-                continue
+        self.system_prompt = (
+            "You are the reasoning model for a private, "
+            "on-premise industrial AI workbench."
+        )
 
-            data = json.loads(line)
+    # ==========================================================
+    # LLM CALL
+    # ==========================================================
 
-            if "message" in data:
-                token = data["message"].get("content", "")
-                if token:
-                    yield token
+    def call_llm(
+        self,
+        prompt: str,
+        temperature: float = 0.1,
+    ) -> str:
 
-            if data.get("done", False):
-                break
+        try:
 
-    def classify_task(self, question):
+            response = self.session.post(
+                OLLAMA_URL,
+                json={
+                    "model": OLLAMA_MODEL,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": self.system_prompt,
+                        },
+                        {
+                            "role": "user",
+                            "content": prompt,
+                        },
+                    ],
+                    "stream": False,
+                    "options": {
+                        "temperature": temperature
+                    },
+                },
+                timeout=120,
+            )
+
+            response.raise_for_status()
+
+            data = response.json()
+
+            return data["message"]["content"]
+
+        except requests.exceptions.RequestException as e:
+
+            # Raise instead of returning fake JSON.
+            # This prevents planner/verifier from treating
+            # an LLM failure as a valid result.
+            raise RuntimeError(
+                f"LLM communication failed: {e}"
+            ) from e
+
+        except (
+            KeyError,
+            ValueError,
+            TypeError,
+        ) as e:
+
+            raise RuntimeError(
+                f"Invalid LLM response: {e}"
+            ) from e
+
+    # ==========================================================
+    # STREAMING LLM
+    # ==========================================================
+
+    def call_llm_stream(
+        self,
+        prompt: str,
+        temperature: float = 0.1,
+    ) -> Generator[str, None, None]:
+
+        try:
+
+            response = self.session.post(
+                OLLAMA_URL,
+                json={
+                    "model": OLLAMA_MODEL,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": self.system_prompt,
+                        },
+                        {
+                            "role": "user",
+                            "content": prompt,
+                        },
+                    ],
+                    "stream": True,
+                    "options": {
+                        "temperature": temperature
+                    },
+                },
+                stream=True,
+                timeout=180,
+            )
+
+            response.raise_for_status()
+
+            for line in response.iter_lines():
+
+                if not line:
+                    continue
+
+                try:
+
+                    data = json.loads(
+                        line
+                    )
+
+                    token = (
+                        data
+                        .get("message", {})
+                        .get("content", "")
+                    )
+
+                    if token:
+                        yield token
+
+                    if data.get(
+                        "done",
+                        False,
+                    ):
+                        break
+
+                except json.JSONDecodeError:
+                    continue
+
+        except requests.exceptions.RequestException as e:
+
+            yield (
+                "\n[Error communicating with model: "
+                f"{e}]"
+            )
+
+    # ==========================================================
+    # CLASSIFICATION
+    # ==========================================================
+
+    def classify_task(
+        self,
+        question: str,
+    ) -> Dict[str, str]:
+
         prompt = f"""
-Classify the user's request into exactly ONE of these intents:
+Classify the user's request into exactly ONE intent:
 
-rag
-general
+'rag'
+or
+'general'
 
-Use "rag" when the question asks about:
-- company information
-- industrial procedures
+Use 'rag' for:
+- company/private knowledge
+- industrial documentation
 - SOPs
+- operational procedures
 - inspection requirements
-- safety requirements
-- internal documents
-- organization-specific information
-- information that should come from uploaded documents
+- engineering documentation
+- safety procedures
+- technical documents
+- schematics
+- internal company information
 
-Use "general" when the question can be answered without
-company-specific documents or private knowledge.
+Use 'general' for:
+- generic coding
+- generic mathematics
+- greetings
+- common knowledge
+- general explanations
 
-Return ONLY valid JSON.
+Return ONLY valid JSON:
 
-Format:
 {{
-    "intent": "rag",
-    "reason": "short explanation"
+  "intent": "rag",
+  "reason": "short reason"
 }}
 
 USER REQUEST:
 {question}
 """
 
-        raw = self.call_llm(prompt)
-
         try:
-            result = json.loads(raw)
-            intent = result.get("intent", "rag").lower()
 
-            if intent not in ["rag", "general"]:
+            raw = self.call_llm(
+                prompt,
+                temperature=0.0,
+            )
+
+            result = self._parse_json(
+                raw
+            )
+
+            if not result:
+                raise ValueError(
+                    "Invalid classifier response"
+                )
+
+            intent = str(
+                result.get(
+                    "intent",
+                    "rag",
+                )
+            ).lower()
+
+            if intent not in {
+                "rag",
+                "general",
+            }:
                 intent = "rag"
 
             return {
                 "intent": intent,
-                "reason": result.get("reason", ""),
+                "reason": str(
+                    result.get(
+                        "reason",
+                        "",
+                    )
+                ),
             }
 
-        except (json.JSONDecodeError, TypeError):
+        except Exception:
+
             return {
                 "intent": "rag",
-                "reason": "Classification failed; using secure RAG fallback.",
+                "reason": (
+                    "Classification failed; "
+                    "defaulting to RAG for safety."
+                ),
             }
 
-    def build_rag_prompt(self, question, context):
+    # ==========================================================
+    # PROMPTS
+    # ==========================================================
+
+    def build_rag_prompt(
+        self,
+        question: str,
+        context: str,
+    ) -> str:
+
         return f"""
 You are operating inside a private industrial AI system.
 
-Answer the user's question using ONLY the retrieved
-local knowledge-base evidence.
+Answer the user's question using ONLY the verified
+retrieved local evidence below.
 
-Rules:
+RULES:
+
 - Do not use outside knowledge.
 - Do not invent facts.
 - Do not invent procedures.
-- Do not invent safety requirements.
-- Do not invent measurements or engineering values.
-- If the evidence is insufficient, clearly state that
-  the local knowledge base does not contain enough information.
+- Do not invent measurements.
+- Do not invent limits.
+- Do not invent equipment specifications.
+- If the evidence does not support something, say so.
+- Clearly distinguish supported information from uncertainty.
+- Mention relevant source files and locations when available.
 
-USER QUESTION:
-{question}
+If the evidence is insufficient, state:
 
-RETRIEVED LOCAL EVIDENCE:
+"The local knowledge base does not contain enough
+information to answer this."
+
+VERIFIED LOCAL EVIDENCE:
 {context}
 
-Provide a concise and professional answer.
+USER QUESTION:
+{question}
 """
 
-    def build_general_prompt(self, question):
+    def build_general_prompt(
+        self,
+        question: str,
+    ) -> str:
+
         return f"""
-Answer the user's question directly.
-
-This request does not require information
-from the private industrial knowledge base.
-
-Do not pretend that information comes from
-company documents.
+Answer the user's question directly and professionally.
 
 USER QUESTION:
 {question}
-
-Provide a clear and professional answer.
 """
 
-    def run_stream(self, question):
-        """
-        Generator that exposes observable agent execution events.
+    # ==========================================================
+    # MAIN AGENT
+    # ==========================================================
 
-        Event format:
-        {
-            "type": "step" | "answer_start" | "token" | "sources" | "done",
-            "message": ...,
-            ...
-        }
+    def run_stream(
+        self,
+        question: str,
+    ) -> Generator[
+        Dict[str, Any],
+        None,
+        None,
+    ]:
 
-        This intentionally exposes execution events, not private
-        model chain-of-thought.
-        """
+        # ------------------------------------------------------
+        # EMPTY REQUEST
+        # ------------------------------------------------------
 
         if not question or not question.strip():
+
             yield {
                 "type": "step",
-                "message": "Please provide a question or task.",
+                "message": (
+                    "Please provide a question or task."
+                ),
             }
+
             yield {
                 "type": "done",
                 "result": {
-                    "answer": "Please provide a question or task.",
+                    "answer": (
+                        "Please provide a question or task."
+                    ),
                     "sources": [],
-                    "steps": ["Received empty user request"],
+                    "steps": [],
                     "intent": "unknown",
+                    "plan": [],
+                    "status": "invalid_request",
+                    "replans": 0,
                 },
             }
+
             return
 
-        steps = []
+        # ------------------------------------------------------
+        # EXECUTION STATE
+        # ------------------------------------------------------
 
-        steps.append("Received user request")
-        yield {"type": "step", "message": "Received user request"}
+        steps_log: List[str] = []
 
-        yield {"type": "step", "message": "Classifying task..."}
+        context = ""
 
-        classification = self.classify_task(question)
-        intent = classification["intent"]
-        reason = classification["reason"]
+        sources = []
 
-        steps.append(f"Classified request as {intent.upper()}")
+        intent = "unknown"
+
+        reason = ""
+
+        plan = {}
+
+        replans = 0
+
+        # ------------------------------------------------------
+        # RECEIVE REQUEST
+        # ------------------------------------------------------
+
+        steps_log.append(
+            "Received user request"
+        )
+
+        yield {
+            "type": "step",
+            "message": "Received user request",
+        }
+
+        # ------------------------------------------------------
+        # CLASSIFY
+        # ------------------------------------------------------
+
+        yield {
+            "type": "step",
+            "message": "Classifying intent...",
+        }
+
+        classification = self.classify_task(
+            question
+        )
+
+        intent = classification[
+            "intent"
+        ]
+
+        reason = classification[
+            "reason"
+        ]
+
+        steps_log.append(
+            f"Intent classified as {intent.upper()}"
+        )
 
         yield {
             "type": "classification",
@@ -216,135 +427,649 @@ Provide a clear and professional answer.
             "reason": reason,
         }
 
+        # ------------------------------------------------------
+        # INITIAL PLAN
+        # ------------------------------------------------------
+
         yield {
             "type": "step",
-            "message": f"Intent detected: {intent.upper()}",
+            "message": "Creating execution plan...",
         }
 
-        if intent == "rag":
-            yield {
-                "type": "step",
-                "message": "Knowledge-based request detected",
-            }
+        plan = self.planner.create_plan(
+            question,
+            intent,
+        )
 
-            yield {
-                "type": "step",
-                "message": "Searching local knowledge base...",
-            }
+        steps = plan.get(
+            "steps",
+            [],
+        )
 
-            rag_result = self.rag.search(question)
+        steps_log.append(
+            f"Created {len(steps)}-step execution plan"
+        )
 
-            if not rag_result["found"]:
-                steps.append("No relevant evidence found")
+        yield {
+            "type": "plan",
+            "goal": plan.get(
+                "goal",
+                "",
+            ),
+            "complexity": plan.get(
+                "complexity",
+                "single_path",
+            ),
+            "steps": steps,
+            "final_output": plan.get(
+                "final_output",
+                "answer",
+            ),
+        }
+
+        # ======================================================
+        # EXECUTION / REPLANNING LOOP
+        # ======================================================
+
+        while True:
+
+            should_replan = False
+
+            replan_reason = ""
+
+            verification = {}
+
+            # --------------------------------------------------
+            # EXECUTE CURRENT PLAN
+            # --------------------------------------------------
+
+            for plan_step in plan.get(
+                "steps",
+                [],
+            ):
+
+                tool = plan_step.get(
+                    "tool"
+                )
+
+                step_id = plan_step.get(
+                    "id"
+                )
+
+                params = plan_step.get(
+                    "params",
+                    {},
+                )
+
+                yield {
+                    "type": "plan_step_start",
+                    "step_id": step_id,
+                    "total": len(
+                        plan.get(
+                            "steps",
+                            [],
+                        )
+                    ),
+                    "action": plan_step.get(
+                        "action",
+                        "",
+                    ),
+                    "tool": tool,
+                    "description": plan_step.get(
+                        "description",
+                        "",
+                    ),
+                }
+
+                # ==============================================
+                # RAG SEARCH
+                # ==============================================
+
+                if tool == "rag_search":
+
+                    search_query = params.get(
+                        "query",
+                        question,
+                    )
+
+                    yield {
+                        "type": "step",
+                        "message": (
+                            "Searching knowledge base: "
+                            f"'{search_query}'..."
+                        ),
+                    }
+
+                    try:
+
+                        rag_result = self.rag.search(
+                            search_query
+                        )
+
+                    except Exception as e:
+
+                        rag_result = {
+                            "found": False,
+                            "context": "",
+                            "sources": [],
+                            "error": str(e),
+                        }
+
+                    found = bool(
+                        rag_result.get(
+                            "found",
+                            False,
+                        )
+                    )
+
+                    context = rag_result.get(
+                        "context",
+                        "",
+                    )
+
+                    sources = rag_result.get(
+                        "sources",
+                        [],
+                    )
+
+                    # ------------------------------------------
+                    # NO RETRIEVAL
+                    # ------------------------------------------
+
+                    if not found:
+
+                        steps_log.append(
+                            "No evidence found"
+                        )
+
+                        yield {
+                            "type": "step",
+                            "message": (
+                                "No relevant local "
+                                "evidence found."
+                            ),
+                        }
+
+                        verification = {
+                            "sufficient": False,
+                            "reason": (
+                                "The local knowledge base "
+                                "returned no usable evidence."
+                            ),
+                            "supported_points": [],
+                            "missing_points": [
+                                question
+                            ],
+                        }
+
+                    else:
+
+                        steps_log.append(
+                            f"Retrieved {len(sources)} sources"
+                        )
+
+                        yield {
+                            "type": "step",
+                            "message": (
+                                f"Retrieved "
+                                f"{len(sources)} source(s)"
+                            ),
+                        }
+
+                        yield {
+                            "type": "retrieval",
+                            "sources": sources,
+                            "context": context,
+                        }
+
+                        # --------------------------------------
+                        # EVIDENCE VERIFICATION
+                        # --------------------------------------
+
+                        yield {
+                            "type": "step",
+                            "message": (
+                                "Verifying retrieved "
+                                "evidence..."
+                            ),
+                        }
+
+                        verification = (
+                            self.verifier.verify(
+                                question=question,
+                                context=context,
+                                sources=sources,
+                            )
+                        )
+
+                        if verification.get(
+                            "sufficient",
+                            False,
+                        ):
+
+                            steps_log.append(
+                                "Evidence verification passed"
+                            )
+
+                            yield {
+                                "type": "step",
+                                "message": (
+                                    "Evidence verification "
+                                    "passed."
+                                ),
+                            }
+
+                        else:
+
+                            steps_log.append(
+                                "Evidence verification failed"
+                            )
+
+                            yield {
+                                "type": "step",
+                                "message": (
+                                    "Evidence is insufficient "
+                                    "or not sufficiently relevant."
+                                ),
+                            }
+
+                    # ------------------------------------------
+                    # DECIDE WHETHER TO REPLAN
+                    # ------------------------------------------
+
+                    if not verification.get(
+                        "sufficient",
+                        False,
+                    ):
+
+                        should_replan = True
+
+                        replan_reason = str(
+                            verification.get(
+                                "reason",
+                                "Retrieved evidence "
+                                "was insufficient.",
+                            )
+                        )
+
+                        # Do not continue to generate_response.
+                        break
+
+                    yield {
+                        "type": "plan_step_complete",
+                        "step_id": step_id,
+                    }
+
+                # ==============================================
+                # GENERATE RESPONSE
+                # ==============================================
+
+                elif tool == "generate_response":
+
+                    # Safety check:
+                    # RAG responses must NEVER be generated
+                    # unless evidence has been verified.
+                    if (
+                        intent == "rag"
+                        and not verification.get(
+                            "sufficient",
+                            False,
+                        )
+                    ):
+
+                        should_replan = True
+
+                        replan_reason = (
+                            "Response generation was blocked "
+                            "because the retrieved evidence "
+                            "was not verified as sufficient."
+                        )
+
+                        break
+
+                    if intent == "rag":
+
+                        prompt = (
+                            self.build_rag_prompt(
+                                question,
+                                context,
+                            )
+                        )
+
+                        yield {
+                            "type": "step",
+                            "message": (
+                                "Sending verified evidence "
+                                "to Qwen3..."
+                            ),
+                        }
+
+                    else:
+
+                        prompt = (
+                            self.build_general_prompt(
+                                question
+                            )
+                        )
+
+                    yield {
+                        "type": "step",
+                        "message": (
+                            "Generating final response..."
+                        ),
+                    }
+
+                    yield {
+                        "type": "answer_start"
+                    }
+
+                    answer_tokens = []
+
+                    for token in self.call_llm_stream(
+                        prompt
+                    ):
+
+                        answer_tokens.append(
+                            token
+                        )
+
+                        yield {
+                            "type": "token",
+                            "content": token,
+                        }
+
+                    answer = "".join(
+                        answer_tokens
+                    )
+
+                    steps_log.append(
+                        "Completed response generation"
+                    )
+
+                    yield {
+                        "type": "plan_step_complete",
+                        "step_id": step_id,
+                    }
+
+                    yield {
+                        "type": "done",
+                        "result": {
+                            "answer": answer,
+                            "sources": sources,
+                            "steps": steps_log,
+                            "intent": intent,
+                            "classification_reason": reason,
+                            "context": context,
+                            "plan": plan.get(
+                                "steps",
+                                [],
+                            ),
+                            "status": "completed",
+                            "replans": replans,
+                            "verification": verification,
+                        },
+                    }
+
+                    return
+
+            # ==================================================
+            # REPLANNING
+            # ==================================================
+
+            if should_replan:
+
+                if replans >= self.MAX_REPLANS:
+
+                    steps_log.append(
+                        "Maximum replanning attempts reached"
+                    )
+
+                    yield {
+                        "type": "step",
+                        "message": (
+                            "Maximum replanning attempts "
+                            "reached. Stopping safely."
+                        ),
+                    }
+
+                    safe_answer = (
+                        "The local knowledge base does not "
+                        "contain enough information to answer "
+                        "this."
+                    )
+
+                    yield {
+                        "type": "done",
+                        "result": {
+                            "answer": safe_answer,
+                            "sources": sources,
+                            "steps": steps_log,
+                            "intent": intent,
+                            "classification_reason": reason,
+                            "context": context,
+                            "plan": plan.get(
+                                "steps",
+                                [],
+                            ),
+                            "status": "insufficient_evidence",
+                            "replans": replans,
+                            "verification": verification,
+                        },
+                    }
+
+                    return
+
+                # ----------------------------------------------
+                # START REPLAN
+                # ----------------------------------------------
+
+                replans += 1
+
+                steps_log.append(
+                    f"Dynamic replan {replans} started"
+                )
 
                 yield {
                     "type": "step",
-                    "message": "No relevant local evidence found",
-                }
-
-                result = {
-                    "answer": (
-                        "The local knowledge base does not contain "
-                        "enough information to answer this."
+                    "message": (
+                        f"🔄 Replanning attempt "
+                        f"{replans}/{self.MAX_REPLANS}..."
                     ),
-                    "sources": [],
-                    "steps": steps,
-                    "intent": intent,
-                    "classification_reason": reason,
-                    "context": "",
                 }
 
-                yield {"type": "done", "result": result}
-                return
+                yield {
+                    "type": "step",
+                    "message": (
+                        f"Reason: {replan_reason}"
+                    ),
+                }
 
-            context = rag_result["context"]
-            sources = rag_result["sources"]
+                # ----------------------------------------------
+                # CREATE NEW PLAN
+                # ----------------------------------------------
 
-            steps.append(
-                f"Retrieved {len(sources)} relevant evidence sources"
-            )
+                try:
 
-            yield {
-                "type": "retrieval",
-                "sources": sources,
-                "context": context,
-            }
+                    new_plan = self.planner.replan(
+                        question=question,
+                        intent=intent,
+                        previous_plan=plan,
+                        feedback=verification,
+                    )
 
-            yield {
-                "type": "step",
-                "message": f"Retrieved {len(sources)} relevant evidence sources",
-            }
+                except Exception as e:
 
-            yield {
-                "type": "step",
-                "message": "Evidence assembled for reasoning model",
-            }
+                    yield {
+                        "type": "step",
+                        "message": (
+                            f"Replanning failed: {e}"
+                        ),
+                    }
 
-            prompt = self.build_rag_prompt(question, context)
+                    new_plan = self.planner._fallback_plan(
+                        question,
+                        intent,
+                    )
 
-            model_name = get_active_ollama_model()
-            yield {
-                "type": "step",
-                "message": f"Sending grounded evidence to {model_name}...",
-            }
+                plan = new_plan
 
-        else:
-            steps.append("Skipped knowledge-base retrieval")
+                steps = plan.get(
+                    "steps",
+                    [],
+                )
 
-            yield {
-                "type": "step",
-                "message": "General request detected",
-            }
+                steps_log.append(
+                    f"Created replacement "
+                    f"{len(steps)}-step plan"
+                )
 
-            yield {
-                "type": "step",
-                "message": "RAG not required — skipping knowledge base",
-            }
+                yield {
+                    "type": "step",
+                    "message": (
+                        f"New execution plan ready: "
+                        f"{len(steps)} step(s)"
+                    ),
+                }
 
-            prompt = self.build_general_prompt(question)
+                yield {
+                    "type": "plan",
+                    "goal": plan.get(
+                        "goal",
+                        "",
+                    ),
+                    "complexity": plan.get(
+                        "complexity",
+                        "single_path",
+                    ),
+                    "steps": steps,
+                    "final_output": plan.get(
+                        "final_output",
+                        "answer",
+                    ),
+                }
 
-        model_name = get_active_ollama_model()
-        steps.append(f"Generating response with {model_name}")
+                # Reset evidence before retrying.
+                context = ""
+
+                sources = []
+
+                verification = {}
+
+                # Restart the execution loop
+                continue
+
+            # Safety fallback.
+            break
+
+        # ======================================================
+        # UNEXPECTED TERMINATION
+        # ======================================================
 
         yield {
-            "type": "step",
-            "message": f"Generating response with {model_name}...",
+            "type": "done",
+            "result": {
+                "answer": (
+                    "The agent could not complete "
+                    "the requested task."
+                ),
+                "sources": sources,
+                "steps": steps_log,
+                "intent": intent,
+                "classification_reason": reason,
+                "context": context,
+                "plan": plan.get(
+                    "steps",
+                    [],
+                ),
+                "status": "failed",
+                "replans": replans,
+                "verification": verification,
+            },
         }
 
-        yield {"type": "answer_start"}
+    # ==========================================================
+    # JSON HELPER
+    # ==========================================================
 
-        answer_parts = []
+    @staticmethod
+    def _parse_json(
+        raw: str,
+    ) -> Dict[str, Any] | None:
 
-        for token in self.call_llm_stream(prompt):
-            answer_parts.append(token)
-            yield {
-                "type": "token",
-                "content": token,
-            }
+        if not raw:
+            return None
 
-        answer = "".join(answer_parts)
+        raw = raw.strip()
 
-        steps.append("Response generation completed")
+        try:
 
-        result = {
-            "answer": answer,
-            "sources": sources if intent == "rag" else [],
-            "steps": steps,
-            "intent": intent,
-            "classification_reason": reason,
-            "context": context if intent == "rag" else "",
-        }
+            data = json.loads(
+                raw
+            )
 
-        yield {"type": "done", "result": result}
+            if isinstance(
+                data,
+                dict,
+            ):
+                return data
 
-    def run(self, question):
-        """
-        Backwards-compatible non-streaming interface.
-        """
-        result = None
+        except json.JSONDecodeError:
+            pass
 
-        for event in self.run_stream(question):
-            if event["type"] == "done":
-                result = event["result"]
+        # Handle markdown JSON.
+        if "```" in raw:
 
-        return result
+            for part in raw.split(
+                "```"
+            ):
+
+                part = part.strip()
+
+                if part.startswith(
+                    "json"
+                ):
+                    part = part[4:].strip()
+
+                try:
+
+                    data = json.loads(
+                        part
+                    )
+
+                    if isinstance(
+                        data,
+                        dict,
+                    ):
+                        return data
+
+                except json.JSONDecodeError:
+                    continue
+
+        # Extract JSON object.
+        start = raw.find("{")
+        end = raw.rfind("}")
+
+        if (
+            start != -1
+            and end != -1
+            and end > start
+        ):
+
+            try:
+
+                data = json.loads(
+                    raw[
+                        start : end + 1
+                    ]
+                )
+
+                if isinstance(
+                    data,
+                    dict,
+                ):
+                    return data
+
+            except json.JSONDecodeError:
+                pass
+
+        return None\
