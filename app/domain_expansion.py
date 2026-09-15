@@ -105,6 +105,61 @@ REFINERY_ONTOLOGY: Dict[str, Dict[str, Any]] = {
         "synonyms": ["BDV-701", "emergency depressurization valve", "depressuring valve"],
         "context": "Remotely operated failsafe emergency depressurization valve venting high-pressure gas to the flare.",
     },
+    "PSV": {
+        "full_name": "Pressure Safety Valve",
+        "synonyms": ["safety valve", "relief valve", "PRV", "pressure relief", "set pressure", "overpressure protection"],
+        "context": "Spring-loaded or pilot-operated autonomous safety valve protecting vessels and piping against catastrophic overpressure.",
+    },
+    "MOV": {
+        "full_name": "Motor Operated Valve",
+        "synonyms": ["motorized valve", "electric actuator", "MOV-104", "isolation valve", "remote operated valve"],
+        "context": "Heavy-duty electric actuator driven valve used for pipeline routing, tank farm isolation, and main line control.",
+    },
+    "XV": {
+        "full_name": "Emergency Isolation Valve",
+        "synonyms": ["XV-301", "shutdown valve", "emergency shutdown valve", "SDV", "failsafe valve", "SIL-3 valve"],
+        "context": "Fail-safe automated fast-acting isolation valve designed to seal off hydrocarbon process units within 3 seconds under SIL-3 trip conditions.",
+    },
+    "PT": {
+        "full_name": "Pressure Transmitter",
+        "synonyms": ["pressure sensor", "PT-101", "pressure transducer", "process pressure", "gauge pressure"],
+        "context": "Electronic instrument measuring line or vessel static/differential pressure and outputting 4-20 mA / HART signal to DCS.",
+    },
+    "TT": {
+        "full_name": "Temperature Transmitter",
+        "synonyms": ["temperature sensor", "RTD", "thermocouple", "TT-101", "process temperature"],
+        "context": "Temperature measurement instrument converting RTD/thermocouple millivolts into calibrated temperature readings.",
+    },
+    "FT": {
+        "full_name": "Flow Transmitter",
+        "synonyms": ["flow meter", "FT-204", "orifice plate", "Coriolis flow meter", "mass flow rate"],
+        "context": "Process flow measurement transmitter monitoring volumetric or mass flow of hydrocarbons, steam, or cooling water.",
+    },
+    "LT": {
+        "full_name": "Level Transmitter",
+        "synonyms": ["level sensor", "radar level gauge", "differential pressure level", "LT-101", "liquid level"],
+        "context": "Continuous liquid level transmitter measuring tank or distillation column bottom levels.",
+    },
+    "HIPPS": {
+        "full_name": "High Integrity Pressure Protection System",
+        "synonyms": ["overpressure protection", "SIL-3", "SIL-4", "fast shutdown", "subsea HIPPS"],
+        "context": "Safety instrumented system acting as the last line of defense against overpressure before mechanical relief valves activate.",
+    },
+    "SCADA": {
+        "full_name": "Supervisory Control and Data Acquisition",
+        "synonyms": ["telemetry", "human machine interface", "HMI", "remote terminal unit", "RTU"],
+        "context": "Plantwide telemetry and supervisory control architecture linking remote terminal units with central engineering workstations.",
+    },
+    "DCS": {
+        "full_name": "Distributed Control System",
+        "synonyms": ["process automation", "Yokogawa DCS", "Honeywell DCS", "operator workstation"],
+        "context": "Multi-loop digital process control system coordinating refinery unit operations, cascade loops, and alarms.",
+    },
+    "SIS": {
+        "full_name": "Safety Instrumented System",
+        "synonyms": ["safety interlock", "emergency shutdown logic", "Triconex", "SIL logic solver"],
+        "context": "Dedicated failsafe logic solver executing emergency trip routines independent of basic process control.",
+    },
     "PLEM": {
         "full_name": "Pipeline End Manifold",
         "synonyms": ["subsea manifold", "SPM pipeline manifold", "subsea isolation valve"],
@@ -213,3 +268,62 @@ def expand_refinery_query(query: str) -> Tuple[str, List[str]]:
     # Dense query augmentation: original query + domain context
     augmented_query = f"{clean_query} | Context: " + " ".join(matched_definitions[:2])
     return augmented_query, sorted(list(lexical_boost_tokens))
+
+
+# Mapping from natural language engineering phrases to standard plant codes
+SPOKEN_PHRASE_TO_CODE: Dict[str, str] = {
+    "blowdown valve": "BDV",
+    "blow down valve": "BDV",
+    "depressurizing valve": "BDV",
+    "pressure safety valve": "PSV",
+    "relief valve": "PSV",
+    "safety relief valve": "PSV",
+    "emergency isolation valve": "XV",
+    "emergency shutdown valve": "XV",
+    "isolation valve": "XV",
+    "motor operated valve": "MOV",
+    "motorized valve": "MOV",
+    "pressure transmitter": "PT",
+    "pressure sensor": "PT",
+    "pressure gauge": "PT",
+    "temperature transmitter": "TT",
+    "temperature sensor": "TT",
+    "flow transmitter": "FT",
+    "flow meter": "FT",
+    "level transmitter": "LT",
+    "level gauge": "LT",
+    "emergency shutdown": "ESD",
+    "emergency depressurization": "EDS",
+    "rapid depressuring": "EDS",
+}
+
+
+def expand_equipment_acronyms(query: str) -> str:
+    """
+    Bidirectional acronym expansion:
+    1. If user uses full spoken phrase ("blowdown valve"), appends exact code ("BDV").
+    2. If user uses exact code ("BDV"), appends full engineering name ("Blowdown Valve").
+    Returns the enriched query string.
+    """
+    if not query:
+        return ""
+    q_lower = query.lower()
+    appends = []
+
+    # 1. Natural phrase to code
+    for phrase, code in SPOKEN_PHRASE_TO_CODE.items():
+        if phrase in q_lower and code not in query.upper():
+            appends.append(code)
+
+    # 2. Acronym to full name
+    q_words = re.findall(r"\b[A-Za-z0-9_-]+\b", query.upper())
+    for word in q_words:
+        if word in REFINERY_ONTOLOGY:
+            full = REFINERY_ONTOLOGY[word]["full_name"]
+            if full.lower() not in q_lower:
+                appends.append(full)
+
+    if appends:
+        return f"{query.strip()} ({' '.join(set(appends))})"
+    return query.strip()
+

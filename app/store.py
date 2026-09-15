@@ -63,30 +63,39 @@ class VectorStore:
                 QDRANT_STORAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
                 self.client = QdrantClient(path=str(QDRANT_STORAGE_PATH))
 
+    def _get_quantization_config(self):
+        """Construct INT8 Scalar Quantization config to reduce memory footprint by ~75%."""
+        try:
+            from qdrant_client.models import ScalarQuantization, ScalarQuantizationConfig, ScalarType
+            return ScalarQuantization(
+                scalar=ScalarQuantizationConfig(
+                    type=ScalarType.INT8,
+                    quantile=0.99,
+                    always_ram=True,
+                )
+            )
+        except Exception:
+            return None
+
     def recreate_collection(self):
-        """Drop and recreate the knowledge collection."""
+        """Drop and recreate the knowledge collection with INT8 scalar quantization support."""
         try:
             self.client.delete_collection(COLLECTION_NAME)
         except Exception:
             pass
 
-        self.client.create_collection(
-            collection_name=COLLECTION_NAME,
-            vectors_config=VectorParams(
-                size=self.vector_size,
-                distance=Distance.COSINE,
-            ),
-        )
-
-    def ensure_collection(self):
-        """Ensure the collection exists with correct dimension and distance."""
+        quant_cfg = self._get_quantization_config()
         try:
-            collections = self.client.get_collections()
-            existing_names = {c.name for c in collections.collections}
+            self.client.create_collection(
+                collection_name=COLLECTION_NAME,
+                vectors_config=VectorParams(
+                    size=self.vector_size,
+                    distance=Distance.COSINE,
+                ),
+                quantization_config=quant_cfg,
+            )
         except Exception:
-            existing_names = set()
-
-        if COLLECTION_NAME not in existing_names:
+            # Fallback without quantization
             self.client.create_collection(
                 collection_name=COLLECTION_NAME,
                 vectors_config=VectorParams(
@@ -94,6 +103,35 @@ class VectorStore:
                     distance=Distance.COSINE,
                 ),
             )
+
+    def ensure_collection(self):
+        """Ensure the collection exists with correct dimension, distance, and quantization."""
+        try:
+            collections = self.client.get_collections()
+            existing_names = {c.name for c in collections.collections}
+        except Exception:
+            existing_names = set()
+
+        if COLLECTION_NAME not in existing_names:
+            quant_cfg = self._get_quantization_config()
+            try:
+                self.client.create_collection(
+                    collection_name=COLLECTION_NAME,
+                    vectors_config=VectorParams(
+                        size=self.vector_size,
+                        distance=Distance.COSINE,
+                    ),
+                    quantization_config=quant_cfg,
+                )
+            except Exception:
+                self.client.create_collection(
+                    collection_name=COLLECTION_NAME,
+                    vectors_config=VectorParams(
+                        size=self.vector_size,
+                        distance=Distance.COSINE,
+                    ),
+                )
+
 
     def upsert(
         self,

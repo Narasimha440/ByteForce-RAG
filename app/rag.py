@@ -32,7 +32,11 @@ from .config import (
     TOP_K,
     get_active_ollama_model,
 )
-from .domain_expansion import expand_refinery_query, extract_query_equipment_tags
+from .domain_expansion import (
+    expand_equipment_acronyms,
+    expand_refinery_query,
+    extract_query_equipment_tags,
+)
 from .embeddings import get_embedding_provider
 from .equipment_graph import format_dossier_box, get_equipment_dossier
 from .reranker import get_reranker
@@ -69,15 +73,21 @@ def is_conversational_query(question: str) -> bool:
     return False
 
 
-def calculate_document_authority(filename: str, location: str, query: str) -> float:
+def calculate_document_authority(
+    filename: str, location: str, query: str, revision: str = "Active"
+) -> float:
     """
-    Calculate an authority multiplier for a document chunk based on document importance.
-    Boosts completed Safety Audits, SOPs, and Design Basis records; demotes blank checklist templates.
+    Calculate an authority multiplier for a document chunk based on document importance and revision status.
+    - Boosts completed Safety Audits, SOPs, and Design Basis records; demotes blank checklist templates.
+    - Factors in document lifecycle: boosts active latest revisions, downweights drafts and superseded versions.
     """
     fn_lower = (filename or "").lower()
     loc_lower = (location or "").lower()
     combined = f"{fn_lower} {loc_lower}"
     q_lower = query.lower()
+
+    # Base authority multiplier
+    multiplier = 1.0
 
     # 1. Operational & Incident Audits (Highest Authority)
     if (
@@ -88,33 +98,43 @@ def calculate_document_authority(filename: str, location: str, query: str) -> fl
         or "annual_safety" in combined
     ):
         if any(w in q_lower for w in ("audit", "report", "incident", "accident", "mah", "inspection", "safety")):
-            return 1.65
-        return 1.35
+            multiplier = 1.65
+        else:
+            multiplier = 1.35
 
     # 2. Standards, Reference & SOPs
-    if (
+    elif (
         "01_standards_reference" in combined
         or "04_sops_manuals" in combined
         or "sop" in combined
         or "standard" in combined
         or "design_basis" in combined
     ):
-        return 1.25
+        multiplier = 1.25
 
     # 3. P&IDs and Schematics
-    if "03_pids" in combined or "pid" in combined or "p&id" in combined or "schematic" in combined:
-        return 1.15
+    elif "03_pids" in combined or "pid" in combined or "p&id" in combined or "schematic" in combined:
+        multiplier = 1.15
 
     # 4. Blank Templates and Forms (Demote blank checklists when searching for real information)
-    if (
+    elif (
         "02_templates_checklists_forms" in combined
         or "template" in combined
         or "blank" in combined
         or "fat_sat_checklist" in combined
     ):
-        return 0.65
+        multiplier = 0.65
 
-    return 1.0
+    # Document Lifecycle & Revision Multiplier
+    rev_lower = (revision or "").lower()
+    if "superseded" in rev_lower or "obsolete" in rev_lower or "withdrawn" in rev_lower:
+        multiplier *= 0.40
+    elif "draft" in rev_lower or "preliminary" in rev_lower:
+        multiplier *= 0.75
+    elif "rev" in rev_lower:
+        multiplier *= 1.05
+
+    return round(multiplier, 4)
 
 
 def verify_numerical_grounding(question: str, hits: List[Any]) -> Dict[str, Any]:
@@ -207,8 +227,28 @@ class LocalRAG:
 
         clean_query = question.strip()
 
-        # Domain Query Expansion (Offline MRPL Ontology)
+        # Check if query contains exact equipment tags, telemetry labels, or error codes
+        tags_in_query = extract_query_equipment_tags(clean_query)
+        is_tag_query = bool(
+            tags_in_query
+            or re.search(r"\b(?:[A-Z0-9]{2,6}-[A-Z0-9]{2,6}|ERR[_-]?[A-Z0-9]+|0x[0-9A-Fa-f]+|E-\d{2,4})\b", clean_query)
+        )
+
+        # Adaptive RRF Weighting:
+        # Tag/Error queries prioritize exact BM25 matches (70/30)
+        # Conceptual queries prioritize deep BGE-M3 semantic vectors (70/30)
+        if is_tag_query:
+            dense_weight = 0.30
+            bm25_weight = 0.70
+        else:
+            dense_weight = 0.70
+            bm25_weight = 0.30
+
+        # Domain Query Expansion & Bidirectional Acronym Augmentation
         augmented_query, lexical_boosts = expand_refinery_query(clean_query)
+        acronym_enriched = expand_equipment_acronyms(clean_query)
+        if acronym_enriched != clean_query:
+            augmented_query = f"{acronym_enriched} | {augmented_query}"
 
         # 1. Dense Semantic Retrieval via Qdrant
         query_vector = self.embedder.embed_query(augmented_query)
@@ -224,7 +264,7 @@ class LocalRAG:
             payload["score"] = float(hit.score) if hit.score is not None else 0.0
             dense_candidates.append((payload, rank))
 
-        # 2. Sparse Lexical Retrieval via BM25 with Lexical Boosts
+        # 2. Sparse Lexical Retrieval via BM25 with Lexical Boosts & Metadata Pre-Filtering
         sparse_candidates = []
         if HYBRID_RETRIEVAL_ENABLED and self.bm25 and self.bm25.corpus_size > 0:
             bm25_query = clean_query
@@ -233,29 +273,34 @@ class LocalRAG:
 
             bm25_results = self.bm25.search(bm25_query, top_k=top_k * 4)
             for rank, (payload, b_score) in enumerate(bm25_results):
+                # Apply filter_criteria to sparse candidates for strict metadata parity
+                if filter_criteria:
+                    match = all(payload.get(k) == v for k, v in filter_criteria.items())
+                    if not match:
+                        continue
                 p_copy = dict(payload)
                 p_copy["bm25_score"] = float(b_score)
                 sparse_candidates.append((p_copy, rank))
 
-        # 3. Reciprocal Rank Fusion (RRF)
+        # 3. Adaptive Reciprocal Rank Fusion (Adaptive RRF)
         if sparse_candidates:
             rrf_scores: Dict[str, float] = {}
             candidate_map: Dict[str, Dict[str, Any]] = {}
 
-            # Score dense candidates
+            # Score dense candidates with dynamic weight
             for payload, rank in dense_candidates:
                 doc_id = payload.get("document_id", "")
                 chunk_id = payload.get("chunk_id", str(rank))
                 unique_key = f"{doc_id}:{chunk_id}"
-                rrf_scores[unique_key] = rrf_scores.get(unique_key, 0.0) + (1.0 / (RRF_K + rank))
+                rrf_scores[unique_key] = rrf_scores.get(unique_key, 0.0) + (dense_weight / (RRF_K + rank))
                 candidate_map[unique_key] = payload
 
-            # Score sparse candidates
+            # Score sparse candidates with dynamic weight
             for payload, rank in sparse_candidates:
                 doc_id = payload.get("document_id", "")
                 chunk_id = payload.get("chunk_id", str(rank))
                 unique_key = f"{doc_id}:{chunk_id}"
-                rrf_scores[unique_key] = rrf_scores.get(unique_key, 0.0) + (1.0 / (RRF_K + rank))
+                rrf_scores[unique_key] = rrf_scores.get(unique_key, 0.0) + (bm25_weight / (RRF_K + rank))
                 if unique_key not in candidate_map:
                     candidate_map[unique_key] = payload
                 else:
@@ -268,18 +313,19 @@ class LocalRAG:
                 dense_score = float(cand.get("score", 0.0) or 0.0)
                 bm25_score = float(cand.get("bm25_score", 0.0) or 0.0)
 
-                # Calibrate unified similarity score
+                # Calibrate unified similarity score adaptively
                 if dense_score > 0.0 and bm25_score > 0.0:
-                    unified_score = 0.5 * dense_score + 0.5 * min(0.95, bm25_score / 12.0)
+                    unified_score = dense_weight * dense_score + bm25_weight * min(0.95, bm25_score / 12.0)
                 elif dense_score > 0.0:
                     unified_score = dense_score
                 else:
                     unified_score = min(0.90, bm25_score / 12.0)
 
-                # Document Authority Re-weighting (Prioritize real audits/SOPs over blank forms)
+                # Document Authority Re-weighting with Revision tracking
                 fn = cand.get("filename", "")
                 loc = cand.get("location", "")
-                authority_mult = calculate_document_authority(fn, loc, clean_query)
+                rev = cand.get("revision", "Active")
+                authority_mult = calculate_document_authority(fn, loc, clean_query, revision=rev)
 
                 cand["score"] = round(unified_score * authority_mult, 4)
                 cand["rrf_score"] = round(rrf_score * authority_mult, 6)
@@ -292,10 +338,12 @@ class LocalRAG:
             for p, _ in dense_candidates:
                 fn = p.get("filename", "")
                 loc = p.get("location", "")
-                authority_mult = calculate_document_authority(fn, loc, clean_query)
+                rev = p.get("revision", "Active")
+                authority_mult = calculate_document_authority(fn, loc, clean_query, revision=rev)
                 p["score"] = round(float(p.get("score", 0.0)) * authority_mult, 4)
                 candidates.append(p)
             candidates.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+
 
         # 4. Filter by minimum similarity threshold
         filtered_candidates = [

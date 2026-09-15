@@ -147,6 +147,7 @@ def chunk_documents(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         content_type = record.get("content_type") or doc_meta.get("content_type", "document")
         category = record.get("category") or doc_meta.get("category", "general")
         document_type = record.get("document_type") or doc_meta.get("document_type", "general")
+        revision = record.get("revision") or doc_meta.get("revision", "Active")
         extraction_method = record.get("extraction_method", "native_text")
         ocr_used = record.get("ocr_used", False)
         ocr_confidence = record.get("ocr_confidence", None)
@@ -187,6 +188,7 @@ def chunk_documents(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "content_type": content_type,
                 "category": category,
                 "document_type": document_type,
+                "revision": revision,
                 "extraction_method": extraction_method,
                 "ocr_used": ocr_used,
                 "ocr_confidence": ocr_confidence,

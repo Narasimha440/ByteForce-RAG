@@ -12,8 +12,10 @@ from app.ocr import (
     MockOCREngine,
     TesseractOCREngine,
     extract_text_with_ocr,
+    extract_layout_with_ocr,
     get_ocr_engine,
     is_text_insufficient,
+    preprocess_image_for_ocr,
     render_pdf_page_to_image,
     sanitize_industrial_tags,
 )
@@ -24,8 +26,11 @@ __all__ = [
     "MockOCREngine",
     "TesseractOCREngine",
     "extract_text_with_ocr",
+    "extract_layout_with_ocr",
     "get_ocr_engine",
     "is_text_insufficient",
+    "preprocess_image_for_ocr",
     "render_pdf_page_to_image",
     "sanitize_industrial_tags",
 ]
+

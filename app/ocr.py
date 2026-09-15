@@ -15,9 +15,9 @@ import io
 import logging
 from pathlib import Path
 import re
-from typing import List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageOps
 
 from .config import (
     OCR_ENABLED,
@@ -51,6 +51,36 @@ def is_text_insufficient(text: Optional[str], min_length: int = OCR_MIN_TEXT_LEN
         return True
 
     return False
+
+
+def preprocess_image_for_ocr(image: Union[Image.Image, Path, str]) -> Image.Image:
+    """
+    Industrial scan preprocessor for RapidOCR:
+    1. Normalizes image to RGB PIL Image.
+    2. Measures dynamic range; applies auto-contrast stretch if the scan is low-contrast,
+       faded, or carbon-copy (preserving pristine digital text without artifact ringing).
+    3. Optional contour-based deskewing if image is tilted.
+    """
+    if isinstance(image, (str, Path)):
+        pil_img = Image.open(str(image)).convert("RGB")
+    elif isinstance(image, Image.Image):
+        pil_img = image.convert("RGB")
+    else:
+        import numpy as np
+        pil_img = Image.fromarray(np.array(image)).convert("RGB")
+
+    try:
+        import numpy as np
+        arr = np.array(pil_img)
+        min_val, max_val = int(arr.min()), int(arr.max())
+        # If the image has low dynamic range (faded, dark, or washed-out scan)
+        if min_val > 25 or max_val < 230:
+            pil_img = ImageOps.autocontrast(pil_img, cutoff=0.5)
+    except Exception as exc:
+        logger.debug(f"Image preprocessing fallback: {exc}")
+
+    return pil_img
+
 
 
 class BaseOCREngine(ABC):
@@ -101,57 +131,60 @@ class RapidOCREngine(BaseOCREngine):
     def is_available(self) -> bool:
         return self._get_engine() is not None
 
-    def extract_text_from_image(
-        self, image: Union[Image.Image, Path, str]
-    ) -> Tuple[str, float]:
+    def extract_layout_from_image(
+        self, image: Union[Image.Image, Path, str], preprocess: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Extract structured layout with physical bounding box coordinates [x1, y1, x2, y2].
+        Enables downstream UI and drawing inspectors to highlight exact visual locations.
+        """
         engine = self._get_engine()
         if engine is None:
             raise RuntimeError("RapidOCR engine is not available.")
 
         import numpy as np
 
-        if isinstance(image, (str, Path)):
-            img_path = str(image)
-            pil_img = Image.open(img_path).convert("RGB")
-            img_np = np.array(pil_img)
+        if preprocess:
+            pil_img = preprocess_image_for_ocr(image)
+        elif isinstance(image, (str, Path)):
+            pil_img = Image.open(str(image)).convert("RGB")
         elif isinstance(image, Image.Image):
             pil_img = image.convert("RGB")
-            img_np = np.array(pil_img)
         else:
-            img_np = np.array(image)
+            pil_img = Image.fromarray(np.array(image)).convert("RGB")
+
+        img_np = np.array(pil_img)
 
         # RapidOCR returns: list of [box, text, score]
         result, _ = engine(img_np)
 
         if not result:
-            return "", 0.0
+            return {"text": "", "average_confidence": 0.0, "blocks": [], "line_count": 0}
 
-        # We will implement advanced layout-aware table reconstruction.
-        # box = [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
-        
         valid_items = []
         for item in result:
             if len(item) >= 3:
                 box, text, score = item[0], str(item[1]).strip(), float(item[2])
                 if text and score >= OCR_CONFIDENCE_THRESHOLD:
-                    # Calculate center y and center x
-                    center_y = sum([p[1] for p in box]) / 4.0
-                    center_x = sum([p[0] for p in box]) / 4.0
-                    height = abs(box[2][1] - box[0][1])
+                    xs = [p[0] for p in box]
+                    ys = [p[1] for p in box]
+                    bbox = [round(min(xs), 1), round(min(ys), 1), round(max(xs), 1), round(max(ys), 1)]
                     valid_items.append({
                         "text": text,
-                        "cy": center_y,
-                        "cx": center_x,
-                        "height": height,
-                        "score": score
+                        "bbox": bbox,
+                        "polygon": box,
+                        "cy": sum(ys) / 4.0,
+                        "cx": sum(xs) / 4.0,
+                        "height": abs(max(ys) - min(ys)),
+                        "score": score,
                     })
 
         if not valid_items:
-            return "", 0.0
+            return {"text": "", "average_confidence": 0.0, "blocks": [], "line_count": 0}
 
         # Group by rows using a dynamic tolerance based on median height
         valid_items.sort(key=lambda x: x["cy"])
-        median_h = sorted([x["height"] for x in valid_items])[len(valid_items)//2]
+        median_h = sorted([x["height"] for x in valid_items])[len(valid_items) // 2]
         y_tolerance = max(median_h * 0.4, 10.0)
 
         rows = []
@@ -161,13 +194,12 @@ class RapidOCREngine(BaseOCREngine):
         for item in valid_items:
             if abs(item["cy"] - current_row_y) <= y_tolerance:
                 current_row.append(item)
-                # update running average y
                 current_row_y = sum([i["cy"] for i in current_row]) / len(current_row)
             else:
                 rows.append(current_row)
                 current_row = [item]
                 current_row_y = item["cy"]
-        
+
         if current_row:
             rows.append(current_row)
 
@@ -178,7 +210,6 @@ class RapidOCREngine(BaseOCREngine):
         for row in rows:
             row.sort(key=lambda x: x["cx"])
             if len(row) > 1:
-                # Format as a table row if multiple columns
                 lines.append(" | ".join([item["text"] for item in row]))
             else:
                 lines.append(row[0]["text"])
@@ -186,7 +217,26 @@ class RapidOCREngine(BaseOCREngine):
         extracted_text = "\n".join(lines).strip()
         avg_confidence = sum(confidences) / len(confidences) if confidences else 0.0
 
-        return extracted_text, round(avg_confidence, 4)
+        return {
+            "text": extracted_text,
+            "average_confidence": round(avg_confidence, 4),
+            "blocks": [
+                {
+                    "text": it["text"],
+                    "bbox": it["bbox"],
+                    "confidence": round(it["score"], 4),
+                }
+                for it in valid_items
+            ],
+            "line_count": len(lines),
+        }
+
+    def extract_text_from_image(
+        self, image: Union[Image.Image, Path, str]
+    ) -> Tuple[str, float]:
+        layout = self.extract_layout_from_image(image, preprocess=True)
+        return layout["text"], layout["average_confidence"]
+
 
 
 class TesseractOCREngine(BaseOCREngine):
@@ -250,8 +300,13 @@ class TesseractOCREngine(BaseOCREngine):
 class MockOCREngine(BaseOCREngine):
     """Deterministic OCR engine for unit and integration tests."""
 
-    def __init__(self, mock_text: str = "Mock OCR Extracted Technical Text PT-101 FT-204"):
+    def __init__(
+        self,
+        mock_text: str = "Mock OCR Extracted Technical Text PT-101 FT-204",
+        mock_confidence: float = 0.95,
+    ):
         self.mock_text = mock_text
+        self.mock_confidence = mock_confidence
 
     def is_available(self) -> bool:
         return True
@@ -259,7 +314,27 @@ class MockOCREngine(BaseOCREngine):
     def extract_text_from_image(
         self, image: Union[Image.Image, Path, str]
     ) -> Tuple[str, float]:
-        return self.mock_text, 0.95
+        return self.mock_text, self.mock_confidence
+
+    def extract_layout_from_image(
+        self, image: Union[Image.Image, Path, str], preprocess: bool = True
+    ) -> Dict[str, Any]:
+        lines = self.mock_text.splitlines()
+        blocks = [
+            {
+                "text": line,
+                "bbox": [10.0, 10.0 + i * 25.0, 250.0, 30.0 + i * 25.0],
+                "confidence": self.mock_confidence,
+            }
+            for i, line in enumerate(lines)
+        ]
+        return {
+            "text": self.mock_text,
+            "average_confidence": self.mock_confidence,
+            "blocks": blocks,
+            "line_count": len(lines),
+        }
+
 
 
 # Global singleton instance cache
@@ -405,4 +480,34 @@ def extract_text_with_ocr(
     if sanitize_tags and raw_text:
         raw_text = sanitize_industrial_tags(raw_text)
     return raw_text, conf
+
+
+def extract_layout_with_ocr(
+    image_or_path: Union[Image.Image, Path, str],
+    sanitize_tags: bool = True,
+    preprocess: bool = True,
+) -> Dict[str, Any]:
+    """
+    Run local OCR on an image or file path and return structured layout
+    with precise bounding box coordinates for each recognized text segment.
+    """
+    engine = get_ocr_engine()
+    if hasattr(engine, "extract_layout_from_image"):
+        layout = engine.extract_layout_from_image(image_or_path, preprocess=preprocess)
+    else:
+        text, conf = engine.extract_text_from_image(image_or_path)
+        layout = {
+            "text": text,
+            "average_confidence": conf,
+            "blocks": [],
+            "line_count": len(text.splitlines()),
+        }
+
+    if sanitize_tags and layout.get("text"):
+        layout["text"] = sanitize_industrial_tags(layout["text"])
+        for block in layout.get("blocks", []):
+            block["text"] = sanitize_industrial_tags(block["text"])
+
+    return layout
+
 

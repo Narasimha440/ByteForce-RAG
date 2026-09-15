@@ -107,13 +107,33 @@ def classify_document(path: Path) -> Dict[str, str]:
     }
 
     category = category_map.get(document_type, "general")
+    revision = extract_revision(filename=path.name)
 
     return {
         "file_type": file_type,
         "content_type": content_type,
         "category": category,
         "document_type": document_type,
+        "revision": revision,
     }
+
+
+def extract_revision(text: str = "", filename: str = "") -> str:
+    """
+    Extract engineering document revision (e.g., 'Rev 0', 'Rev 1', 'Rev A', 'Rev 2.1', 'Draft', 'Superseded').
+    Returns 'Active' if no specific revision code is found.
+    """
+    combined = f"{filename} {text[:1500]}"
+    if re.search(r"\b(superseded|obsolete|withdrawn)\b", combined, re.IGNORECASE):
+        return "Superseded"
+    if re.search(r"\b(draft|preliminary|unapproved)\b", combined, re.IGNORECASE):
+        return "Draft"
+
+    match = re.search(r"\b(?:Rev|Revision)[\s.:_-]*([0-9]+(?:\.[0-9]+)?|[A-Z])\b", combined, re.IGNORECASE)
+    if match:
+        return f"Rev {match.group(1).upper()}"
+    return "Active"
+
 
 
 def extract_tags(text: str) -> List[str]:
