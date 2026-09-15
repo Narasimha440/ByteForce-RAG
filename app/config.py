@@ -56,8 +56,8 @@ OLLAMA_MODEL = get_active_ollama_model()
 OLLAMA_VISION_MODEL = "llava"  # or minicpm-v
 
 # Embedding Provider
-EMBEDDING_MODEL = "BAAI/bge-m3"
-EMBEDDING_PROVIDER = "local"  # "local" (in-process BGE-M3) or "api" (future internal HTTP API)
+EMBEDDING_MODEL = "nomic-embed-text" # Changed from BAAI/bge-m3 to save RAM
+EMBEDDING_PROVIDER = "ollama"  # Offloads embedding to Ollama backend
 EMBEDDING_API_URL = "http://localhost:8000/embed"
 
 # Chunking & Splitting

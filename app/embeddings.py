@@ -147,6 +147,64 @@ class APIEmbeddingProvider(BaseEmbeddingProvider):
         return self.embed_documents([query])[0]
 
 
+class OllamaEmbeddingProvider(BaseEmbeddingProvider):
+    """
+    Ollama API embedding provider for models like nomic-embed-text.
+    Offloads heavy tensor operations from Python RAM to the Ollama backend.
+    """
+
+    def __init__(self, model_name: str = "nomic-embed-text", api_url: str = "http://localhost:11434/api/embeddings"):
+        self.model_name = model_name
+        self.api_url = api_url
+        
+        # Dimensions for common Ollama embedding models
+        if "nomic" in self.model_name:
+            self._dimension = 768
+        elif "mxbai" in self.model_name:
+            self._dimension = 1024
+        elif "bge" in self.model_name:
+            self._dimension = 1024
+        else:
+            self._dimension = 768  # safe fallback
+
+    def get_dimension(self) -> int:
+        return self._dimension
+
+    def _call_ollama(self, prompt: str) -> List[float]:
+        resp = requests.post(
+            self.api_url,
+            json={"model": self.model_name, "prompt": prompt},
+            timeout=120,
+        )
+        if resp.ok:
+            return resp.json().get("embedding", [])
+        resp.raise_for_status()
+
+    def embed_documents(self, texts: List[str], batch_size: int = 16) -> List[List[float]]:
+        if not texts:
+            return []
+            
+        embeddings = []
+        for text in texts:
+            # Task-specific instructional prompting for document embedding
+            instruction_text = f"search_document: {text}" if "nomic" in self.model_name else text
+            
+            try:
+                emb = self._call_ollama(instruction_text)
+                embeddings.append(emb)
+            except Exception as e:
+                logger.error(f"Ollama embedding failed for chunk: {e}")
+                # Fallback to zero vector to prevent crash
+                embeddings.append([0.0] * self.get_dimension())
+                
+        return embeddings
+
+    def embed_query(self, query: str) -> List[float]:
+        # Task-specific instructional prompting for query embedding
+        instruction_query = f"search_query: {query}" if "nomic" in self.model_name else query
+        return self._call_ollama(instruction_query)
+
+
 class MockEmbeddingProvider(BaseEmbeddingProvider):
     """Deterministic, lightweight embedding provider for unit tests."""
 
@@ -186,6 +244,8 @@ def get_embedding_provider(provider_type: Optional[str] = None) -> BaseEmbedding
 
     if ptype == "mock":
         provider = MockEmbeddingProvider()
+    elif ptype == "ollama":
+        provider = OllamaEmbeddingProvider(model_name=EMBEDDING_MODEL)
     elif ptype == "api":
         provider = APIEmbeddingProvider()
     else:  # "local" (default)
