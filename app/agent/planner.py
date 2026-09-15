@@ -14,9 +14,9 @@ class Planner:
     def __init__(self, llm_call):
         self.llm_call = llm_call
 
-    # ==========================================================
-    # FALLBACK PLAN
-    # ==========================================================
+    
+    
+    
 
     def _fallback_plan(
         self,
@@ -73,9 +73,9 @@ class Planner:
             "final_output": "answer",
         }
 
-    # ==========================================================
-    # INITIAL PLAN
-    # ==========================================================
+    
+    
+    
 
     def create_plan(self, question: str, intent: str,) -> Dict[str, Any]:
         try:
@@ -175,9 +175,9 @@ Required structure:
 """
         return self.llm_call(prompt, temperature=0.0,)
 
-    # ==========================================================
-    # DYNAMIC REPLAN
-    # ==========================================================
+    
+    
+    
 
     def replan(
         self,
@@ -316,8 +316,8 @@ Return ONLY valid JSON:
             )
 
             if validated:
-                # Make sure the new plan isn't simply repeating
-                # the exact previous search query.
+                
+                
                 new_query = self._get_rag_query(
                     validated,
                 )
@@ -332,7 +332,7 @@ Return ONLY valid JSON:
         except Exception:
             pass
 
-        # Safe deterministic fallback if the planner fails.
+        
         fallback_query = self._build_fallback_requery(
             question,
             previous_query,
@@ -372,9 +372,9 @@ Return ONLY valid JSON:
             "final_output": "grounded_answer",
         }
 
-    # ==========================================================
-    # PLAN VALIDATION
-    # ==========================================================
+    
+    
+    
 
     def validate_plan(
         self,
@@ -433,7 +433,7 @@ Return ONLY valid JSON:
             ):
                 params = {}
 
-            # Validate RAG parameters.
+            
             if tool == "rag_search":
                 query = str(
                     params.get(
@@ -469,7 +469,7 @@ Return ONLY valid JSON:
                 }
             )
 
-        # A valid RAG plan must eventually generate a response.
+        
         if intent == "rag":
 
             has_rag = any(
@@ -507,9 +507,9 @@ Return ONLY valid JSON:
             ),
         }
 
-    # ==========================================================
-    # HELPERS
-    # ==========================================================
+    
+    
+    
 
     @staticmethod
     def _get_rag_query(
